@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="fr">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=880,height=260,initial-scale=1" />
+    <title>CODE_RUN HUD</title>
+    <link rel="stylesheet" href="./overlay.css" />
+</head>
+
+<body>
+    <div class="wrap">
+        <div class="hud">
+
+            <div class="header">
+                <span class="prompt">▸</span>
+                <span class="title">CODE_RUN</span>
+            </div>
+
+            <div class="content">
+
+                <div class="left">
+
+                    <div class="row-main">
+                        <div class="timer" id="time">00:00.00</div>
+
+                        <div class="sep">│</div>
+
+                        <div class="kv wide">
+                            <span class="k">SPLIT</span>
+                            <span class="v" id="splitName">—</span>
+                        </div>
+
+                        <div class="sep">│</div>
+
+                        <div class="kv"><span class="k">K/MIN</span><span class="v" id="kpm">0</span></div>
+                        <div class="kv"><span class="k">PREC</span><span class="v" id="prec">0%</span></div>
+                        <div class="kv"><span class="k">LN</span><span class="v" id="lpm">0</span></div>
+                    </div>
+
+                    <div class="stats-grid">
+
+                        <div class="stats-block">
+                            <div class="stats-title">SESSION</div>
+
+                            <div class="stats-line filesLine">
+                                <span>FILES</span>
+                                <b id="files">0</b>
+                                <em class="activeFile" id="activeFile">—</em>
+                                <span class="delta" id="filesDelta"><span class="pos">+0</span>/<span
+                                        class="neg">-0</span></span>
+                            </div>
+
+                            <div class="stats-line diagLine">
+                                <span>DIAG</span>
+                                <b id="diag"><span class="diag-errors">E0</span> <span
+                                        class="diag-warnings">W0</span></b>
+                            </div>
+
+                            <div class="stats-line inline">
+                                <span>BUILD</span><b id="buildValue">idle</b>
+                                <span>MOOD</span><b id="mood">IDLE</b>
+                            </div>
+                        </div>
+
+                        <div class="stats-block">
+                            <div class="stats-title">CODE MIX</div>
+                            <div class="mix-vert" id="mixVert">
+                                <div class="mixItem"><span>JS</span><i id="jsBar"></i></div>
+                                <div class="mixItem"><span>CSS</span><i id="cssBar"></i></div>
+                                <div class="mixItem"><span>HTML</span><i id="htmlBar"></i></div>
+                                <div class="mixItem"><span>OTHER</span><i id="otherBar"></i></div>
+                            </div>
+                        </div>
+
+                        <div class="stats-block">
+                            <div class="stats-title">ACTIVITY</div>
+                            <div class="bar-line"><span>FOCUS</span><i id="focusBar"></i><b id="focusVal">0%</b></div>
+                            <div class="bar-line"><span>ACT</span><i id="actBar"></i><b id="actVal">0</b></div>
+                            <div class="bar-line"><span>PACE</span><i id="paceBar"></i><b id="paceVal">0</b></div>
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div class="right">
+                    <div class="splits-title"><span class="prompt">▸</span> SPLITS</div>
+                    <div class="splits-viewport">
+                        <div class="splits-track" id="splits"></div>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+
+    <script src="./overlay.js"></script>
+</body>
+
+</html>

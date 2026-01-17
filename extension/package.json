@@ -1,0 +1,72 @@
+{
+    "name": "vscode-speedrun-overlay",
+    "displayName": "VS Code Speedrun Overlay",
+    "description": "Exports session timer/splits/metrics to a local overlay server for OBS.",
+    "version": "1.0.0",
+    "publisher": "local",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "*"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "speedrun.runStart",
+                "title": "Speedrun: Start/Resume"
+            },
+            {
+                "command": "speedrun.runPause",
+                "title": "Speedrun: Pause"
+            },
+            {
+                "command": "speedrun.runReset",
+                "title": "Speedrun: Reset"
+            },
+            {
+                "command": "speedrun.runStop",
+                "title": "Speedrun: Stop (save summary)"
+            },
+            {
+                "command": "speedrun.split",
+                "title": "Speedrun: Add Split"
+            },
+            {
+                "command": "speedrun.buildStart",
+                "title": "Speedrun: Build Start"
+            },
+            {
+                "command": "speedrun.buildSuccess",
+                "title": "Speedrun: Build Stop (Success)"
+            },
+            {
+                "command": "speedrun.buildFail",
+                "title": "Speedrun: Build Stop (Fail)"
+            }
+        ],
+        "configuration": {
+            "title": "Speedrun Overlay",
+            "properties": {
+                "speedrunOverlay.serverUrl": {
+                    "type": "string",
+                    "default": "http://localhost:17890",
+                    "description": "Local server base URL."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p .",
+        "watch": "tsc -w -p ."
+    },
+    "devDependencies": {
+        "@types/node": "^20.19.30",
+        "@types/vscode": "^1.108.1",
+        "typescript": "^5.5.4"
+    }
+}
