@@ -31,6 +31,7 @@ const el = {
     js: $("jsBar"),
     css: $("cssBar"),
     html: $("htmlBar"),
+    text: $("textBar"),
     other: $("otherBar"),
 
     splits: $("splits"),
@@ -54,6 +55,7 @@ function clamp(n, min, max) {
 }
 
 function bar(node, vPct, color) {
+    if (!node) return;
     node.style.setProperty("--v", clamp(vPct, 0, 100) + "%");
     if (color) node.style.setProperty("--c", color);
 }
@@ -88,19 +90,51 @@ function basename(p) {
     return parts[parts.length - 1] || "—";
 }
 
-function moodFromActivity(focusPct, actPct, kpm) {
-    if (focusPct < 15 && actPct < 10) return "IDLE";
-    if (focusPct > 70 && actPct > 60) return "FLOW";
-    if (kpm > 240) return "ZOOM";
-    if (actPct > 50) return "ACTIVE";
-    return "THINK";
+function moodFromActivity(mix, kpm, lpm) {
+    const textPct = mix.textPct || 0;
+    const codePct = mix.jsPct + mix.cssPct + mix.htmlPct;
+
+    // THINK: écriture de texte/docs/comments
+    if (textPct > 40 && kpm < 200) {
+        return { text: "THINK", color: "#38bdf8" };
+    }
+
+    // FLOW: code intense avec bonne cadence
+    if (codePct > 60 && kpm > 200 && Math.abs(lpm) > 5) {
+        return { text: "FLOW", color: "#35e08c" };
+    }
+
+    // ZOOM: frappe ultra rapide
+    if (kpm > 280) {
+        return { text: "ZOOM", color: "#ffd166" };
+    }
+
+    // WORK: code actif
+    if (codePct > 40 && kpm > 100) {
+        return { text: "WORK", color: "#38bdf8" };
+    }
+
+    // DEBUG: beaucoup de suppressions
+    if (lpm < -10 && kpm > 80) {
+        return { text: "DEBUG", color: "#f97316" };
+    }
+
+    // IDLE: peu d'activité
+    if (kpm < 50) {
+        return { text: "IDLE", color: "rgba(230, 241, 255, 0.4)" };
+    }
+
+    // ACTIVE: par défaut si actif
+    return { text: "ACTIVE", color: "#fbbf24" };
 }
 
 function renderSplits(list) {
     el.splits.innerHTML = "";
     list.forEach((s, i) => {
         const d = document.createElement("div");
-        d.className = "split" + (i === list.length - 1 ? " current" : "");
+        const isCurrent = i === list.length - 1;
+        const type = s.type || "default";
+        d.className = `split type-${type}${isCurrent ? " current" : ""}`;
 
         const fc = s.summary?.filesCreated ?? 0;
         const fd = s.summary?.filesDeleted ?? 0;
@@ -120,12 +154,15 @@ function computeCodeMix(filesByExt) {
     const js = (filesByExt.js || 0) + (filesByExt.ts || 0) + (filesByExt.jsx || 0) + (filesByExt.tsx || 0);
     const css = filesByExt.css || 0;
     const html = filesByExt.html || 0;
+    const text = filesByExt.text || 0;
     const other = filesByExt.other || 0;
-    const total = Math.max(1, js + css + html + other);
+    const total = Math.max(1, js + css + html + text + other);
+
     return {
         jsPct: Math.round((js / total) * 100),
         cssPct: Math.round((css / total) * 100),
         htmlPct: Math.round((html / total) * 100),
+        textPct: Math.round((text / total) * 100),
         otherPct: Math.round((other / total) * 100),
     };
 }
@@ -194,31 +231,25 @@ function connect() {
         setPerf(el.actVal, act >= 70 ? "good" : act >= 40 ? "warn" : act >= 20 ? "bad" : "morb");
         setPerf(el.paceVal, levelFromKpm(kpm));
 
-        const moodText = moodFromActivity(focus, act, kpm);
-        el.mood.textContent = moodText;
-        clearPerfClasses(el.mood);
-        el.mood.style.color = ""; // Reset inline style
-
-        // Couleurs MOOD selon l'état
-        if (moodText === "FLOW") {
-            el.mood.classList.add("good");
-        } else if (moodText === "ZOOM" || moodText === "ACTIVE") {
-            el.mood.classList.add("warn");
-        } else if (moodText === "THINK") {
-            el.mood.classList.add("good"); // Bleu soft pour réflexion
-            el.mood.style.color = "#38bdf8";
-        } else if (moodText === "IDLE") {
-            el.mood.style.color = "rgba(230, 241, 255, 0.4)"; // Gris très soft
-        }
-
+        // CODE MIX
         const mix = computeCodeMix(s.metrics.filesByExt || {});
+
         bar(el.js, mix.jsPct, "#38bdf8");
         bar(el.css, mix.cssPct, "#35e08c");
         bar(el.html, mix.htmlPct, "#fb9238");
+        bar(el.text, mix.textPct, "#fbbf24");
         bar(el.other, mix.otherPct, "#b26bff");
 
-        el.split.textContent = s.run.splits?.at(-1)?.name || "—";
-        renderSplits(s.run.splits || []);
+        // MOOD basé sur le code mix
+        const mood = moodFromActivity(mix, kpm, lpm);
+        el.mood.textContent = mood.text;
+        el.mood.style.color = mood.color;
+
+        el.split.textContent = s.run.current?.name || s.run.currentSegment?.name || "—";
+
+        const list = [...(s.run.splits || [])];
+        if (s.run.currentSegment) list.push(s.run.currentSegment);
+        renderSplits(list);
     };
 
     ws.onclose = () => setTimeout(connect, 800);

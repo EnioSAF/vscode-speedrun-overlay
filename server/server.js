@@ -37,6 +37,7 @@ function bucketExt(ext) {
     if (ext === "tsx") return "tsx";
     if (ext === "css" || ext === "scss" || ext === "sass" || ext === "less") return "css";
     if (ext === "html" || ext === "htm") return "html";
+    if (ext === "md" || ext === "txt") return "text";
     return "other";
 }
 
@@ -47,6 +48,7 @@ const state = {
         pausedAt: null,
         accumulatedPausedMs: 0,
         splits: [],
+        current: null,
         lastRunSummary: null,
         snap: {
             atMs: 0,
@@ -67,16 +69,14 @@ const state = {
         linesRemovedTotal: 0,
 
         filesTouched: new Set(),
-        filesByBucket: new Map(), // bucket -> Set(file)
+        filesByBucket: new Map(),
 
-        // Extra UX: last active file + file create/delete tracking
         activeFile: null,
         filesCreatedTotal: 0,
         filesDeletedTotal: 0,
 
-        events: [], // { t, charsAdd, charsRem, linesAdd, linesRem }
+        events: [],
 
-        // Optional extra info: a "worst" diagnostic excerpt
         diagnostics: { errors: 0, warnings: 0, worst: null },
 
         build: {
@@ -126,20 +126,6 @@ function mergedActiveMs(events, windowStart, windowEnd, activeGraceMs) {
     return total;
 }
 
-function filesByExtPublic() {
-    const out = { js: 0, ts: 0, jsx: 0, tsx: 0, css: 0, html: 0, other: 0, front: 0, back: 0 };
-    for (const [bucket, set] of state.metrics.filesByBucket.entries()) {
-        const n = set.size;
-        if (out[bucket] == null) out.other += n;
-        else out[bucket] += n;
-    }
-    const front = out.js + out.ts + out.jsx + out.tsx + out.css + out.html;
-    const total = front + out.other;
-    out.front = front;
-    out.back = total - front;
-    return out;
-}
-
 function toPublicState() {
     const tMs = runTimeMs();
 
@@ -157,6 +143,18 @@ function toPublicState() {
             return acc;
         },
         { add: 0, rem: 0, ladd: 0, lrem: 0 }
+    );
+
+    // Code-mix rolling window basé sur les caractères édités
+    const mixRolling = state.metrics.events.reduce(
+        (acc, e) => {
+            const b = e.bucket || "other";
+            const w = Math.max(0, (e.charsAdd || 0) + (e.charsRem || 0));
+            if (acc[b] == null) acc.other += w;
+            else acc[b] += w;
+            return acc;
+        },
+        { js: 0, ts: 0, jsx: 0, tsx: 0, css: 0, html: 0, text: 0, other: 0 }
     );
 
     const charsPerMin = sum.add;
@@ -184,11 +182,27 @@ function toPublicState() {
         filesDeleted: Math.max(0, state.metrics.filesDeletedTotal - state.run.snap.filesDeleted)
     };
 
+    const currentSegMs = state.run.status === "stopped" ? 0 : Math.max(0, tMs - (state.run.snap.atMs || 0));
+    const currentSegment = state.run.status === "stopped" ? null : {
+        name: state.run.current?.name || "—",
+        type: state.run.current?.type || "default",
+        segMs: currentSegMs,
+        summary: {
+            filesCreated: seg.filesCreated,
+            filesDeleted: seg.filesDeleted,
+            linesNet: (seg.linesAdd - seg.linesRem),
+            precision: precisionPercent(seg.charsAdd, seg.charsRem),
+            keys: Math.round(seg.charsAdd * 0.9)
+        }
+    };
+
     return {
         run: {
             status: state.run.status,
             timeMs: tMs,
             splits,
+            current: state.run.current,
+            currentSegment,
             lastRunSummary: state.run.lastRunSummary
         },
         metrics: {
@@ -215,7 +229,7 @@ function toPublicState() {
                 activeRatio,
                 idleRatio: 100 - activeRatio
             },
-            filesByExt: filesByExtPublic(),
+            filesByExt: mixRolling,
             activeFile: state.metrics.activeFile,
             build: state.metrics.build
         }
@@ -250,6 +264,7 @@ function resetRun() {
     state.run.pausedAt = null;
     state.run.accumulatedPausedMs = 0;
     state.run.splits = [];
+    state.run.current = null;
     state.run.snap = {
         atMs: 0,
         charsAdd: 0,
@@ -272,15 +287,13 @@ function finishRunSummary() {
     };
 }
 
-// --- WebSocket ---
 wss.on("connection", (ws) => {
     ws.send(JSON.stringify({ type: "state", data: toPublicState() }));
 });
 
-// --- API ---
 app.get("/state", (_req, res) => res.json(toPublicState()));
 
-app.post("/run/start", (_req, res) => {
+app.post("/run/start", (req, res) => {
     if (state.run.status === "running") return res.json({ ok: true });
 
     if (state.run.status === "paused") {
@@ -296,6 +309,10 @@ app.post("/run/start", (_req, res) => {
     resetRun();
     state.run.startedAt = nowMs();
     state.run.status = "running";
+
+    const parsed = parseSplitName(req.body?.name || "");
+    state.run.current = { name: parsed.name || "Split 1", type: parsed.type || "default" };
+
     broadcast();
     res.json({ ok: true });
 });
@@ -324,7 +341,6 @@ app.post("/run/stop", (_req, res) => {
     res.json({ ok: true });
 });
 
-// --- METRICS from extension ---
 app.post("/metrics/text", (req, res) => {
     const charsAdd = Math.max(0, Number(req.body?.charsAdd || 0));
     const charsRem = Math.max(0, Number(req.body?.charsRem || 0));
@@ -337,23 +353,23 @@ app.post("/metrics/text", (req, res) => {
     state.metrics.linesAddedTotal += linesAdd;
     state.metrics.linesRemovedTotal += linesRem;
 
+    let bucket = "other";
     if (file) {
         state.metrics.activeFile = file;
         state.metrics.filesTouched.add(file);
-        const bucket = bucketExt(extOf(file));
+        bucket = bucketExt(extOf(file));
         if (!state.metrics.filesByBucket.has(bucket)) state.metrics.filesByBucket.set(bucket, new Set());
         state.metrics.filesByBucket.get(bucket).add(file);
     }
 
     if (state.run.status === "running") {
-        state.metrics.events.push({ t: nowMs(), charsAdd, charsRem, linesAdd, linesRem });
+        state.metrics.events.push({ t: nowMs(), charsAdd, charsRem, linesAdd, linesRem, bucket });
     }
 
     broadcast();
     res.json({ ok: true });
 });
 
-// File create/delete tracking (used for per-split delta)
 app.post("/metrics/files", (req, res) => {
     const created = Math.max(0, Number(req.body?.created || 0));
     const deleted = Math.max(0, Number(req.body?.deleted || 0));
@@ -382,7 +398,6 @@ app.post("/metrics/diagnostics", (req, res) => {
     res.json({ ok: true });
 });
 
-// --- BUILD ---
 app.post("/build/start", (_req, res) => {
     state.metrics.build.status = "running";
     state.metrics.build.startedAt = nowMs();
@@ -405,7 +420,6 @@ app.post("/build/stop", (req, res) => {
     res.json({ ok: true });
 });
 
-// --- SPLIT ---
 app.post("/split", (req, res) => {
     const raw = String(req.body?.name || "");
     const parsed = parseSplitName(raw);
@@ -429,9 +443,11 @@ app.post("/split", (req, res) => {
     const segLinesNet = segLinesAdd - segLinesRem;
     const segKeys = Math.round(segCharsAdd * 0.9);
 
+    const prev = state.run.current || { name: "Split", type: "default" };
+
     state.run.splits.push({
-        name: parsed.name,
-        type: parsed.type,
+        name: prev.name,
+        type: prev.type,
         atMs,
         segMs,
         summary: {
@@ -454,6 +470,8 @@ app.post("/split", (req, res) => {
         filesCreated: state.metrics.filesCreatedTotal,
         filesDeleted: state.metrics.filesDeletedTotal
     };
+
+    state.run.current = { name: parsed.name || "Split", type: parsed.type || "default" };
 
     broadcast();
     res.json({ ok: true });

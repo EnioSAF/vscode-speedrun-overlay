@@ -90,29 +90,50 @@ function countDiagnostics() {
 function activate(context) {
     const baseUrl = () => getBaseUrl();
     const lastTextByUri = new Map();
+    let trackedFiles = new Set();
+    // Track file creation/deletion
+    const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*");
+    fileWatcher.onDidCreate(async (uri) => {
+        if (!trackedFiles.has(uri.toString())) {
+            trackedFiles.add(uri.toString());
+            try {
+                await requestJson(baseUrl(), "/metrics/files", { created: 1 });
+            }
+            catch { }
+        }
+    });
+    fileWatcher.onDidDelete(async (uri) => {
+        if (trackedFiles.has(uri.toString())) {
+            trackedFiles.delete(uri.toString());
+            try {
+                await requestJson(baseUrl(), "/metrics/files", { deleted: 1 });
+            }
+            catch { }
+        }
+    });
+    context.subscriptions.push(fileWatcher);
     context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((doc) => {
         if (doc.isUntitled)
             return;
-        lastTextByUri.set(doc.uri.toString(), doc.getText());
+        const uri = doc.uri.toString();
+        lastTextByUri.set(uri, doc.getText());
+        trackedFiles.add(uri);
     }));
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async (ev) => {
         const doc = ev.document;
-        // Ignore unsaved buffers (optional; you can remove this later)
         if (doc.isUntitled)
             return;
-        // Safety on huge docs
         if (doc.getText().length > 2_000_000)
             return;
         const uri = doc.uri.toString();
         const prev = lastTextByUri.get(uri) ?? doc.getText();
         const next = doc.getText();
         lastTextByUri.set(uri, next);
-        // charsAdd / charsRem from contentChanges
         let charsAdd = 0;
         let charsRem = 0;
         for (const c of ev.contentChanges) {
-            charsAdd += c.text.length; // inserted text
-            charsRem += c.rangeLength || 0; // removed/replaced length
+            charsAdd += c.text.length;
+            charsRem += c.rangeLength || 0;
         }
         const { add: linesAdd, rem: linesRem } = computeLineDelta(prev, next);
         try {
@@ -124,11 +145,8 @@ function activate(context) {
                 file: doc.fileName
             });
         }
-        catch {
-            // server down => ignore
-        }
+        catch { }
     }));
-    // Diagnostics push (debounced)
     let diagTimer = null;
     const pushDiagnostics = () => {
         if (diagTimer)
@@ -145,14 +163,24 @@ function activate(context) {
     pushDiagnostics();
     const cmd = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
     cmd("speedrun.runStart", async () => {
-        await requestJson(baseUrl(), "/run/start");
-        vscode.window.setStatusBarMessage("Speedrun: RUNNING", 1200);
+        const name = await vscode.window.showInputBox({
+            title: "Start Run - Name the first split",
+            placeHolder: "[work] Feature X | [brainstorm] Planning | [chill] Cleanup | [debug] Fix crash",
+            value: "Split 1"
+        });
+        if (name === undefined)
+            return;
+        // Reset file tracking
+        trackedFiles.clear();
+        await requestJson(baseUrl(), "/run/start", { name: name || "Split 1" });
+        vscode.window.setStatusBarMessage(`Speedrun: RUNNING - ${name || "Split 1"}`, 1200);
     });
     cmd("speedrun.runPause", async () => {
         await requestJson(baseUrl(), "/run/pause");
         vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
     });
     cmd("speedrun.runReset", async () => {
+        trackedFiles.clear();
         await requestJson(baseUrl(), "/run/reset");
         vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
     });
@@ -162,7 +190,7 @@ function activate(context) {
     });
     cmd("speedrun.split", async () => {
         const name = await vscode.window.showInputBox({
-            title: "Split name",
+            title: "Next split name",
             placeHolder: "[work] Auth Fix | [brainstorm] Idea | [chill] Cleanup | [debug] Fix crash"
         });
         if (!name)

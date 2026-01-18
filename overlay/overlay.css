@@ -19,6 +19,10 @@ body {
   --bad: #ff4d6d;
   --good: #35e08c;
   --morb: #b26bff;
+  --work: #38bdf8;
+  --brainstorm: #fbbf24;
+  --chill: #a78bfa;
+  --debug: #f97316;
   --mono: "JetBrains Mono", Consolas, ui-monospace, monospace;
 }
 
@@ -169,6 +173,7 @@ body {
 .stats-line {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   margin: 3px 0;
   font-size: 11px;
 }
@@ -178,10 +183,11 @@ body {
   gap: 12px;
 }
 
-.stats-line b {
-  color: var(--fg);
+.stats-line b,
+.stats-line b * {
   font-size: 13px;
   font-weight: 700;
+  color: var(--fg);
 }
 
 .stats-line span:first-child {
@@ -196,6 +202,7 @@ body {
   gap: 8px;
   justify-content: flex-start;
 }
+
 .activeFile {
   max-width: 100px;
   overflow: hidden;
@@ -203,39 +210,59 @@ body {
   white-space: nowrap;
   font-style: normal;
   color: rgba(56, 189, 248, 0.9);
-  font-size: 10px;
+  font-size: 11px;
 }
+
 .delta {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1;
   padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.08);
-  color: rgba(230, 241, 255, 0.8);
+  font-weight: 700;
+  display: flex;
+  gap: 2px;
+}
+
+.delta span {
+  font-size: 13px;
   font-weight: 700;
 }
+
 .delta .pos {
   color: var(--good);
 }
+
 .delta .neg {
   color: var(--bad);
+}
+
+#buildValue,
+#mood {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 13px !important;
+  font-weight: 700 !important;
 }
 
 .diagLine {
   align-items: baseline;
 }
 
-.diag-errors,
-.diag-warnings {
-  font-size: 13px;
-  font-weight: 700;
+#diag,
+#diag * {
+  font-size: 13px !important;
+  font-weight: 700 !important;
 }
+
 .diag-errors {
-  color: var(--bad);
+  color: #ff6b6b;
 }
+
 .diag-warnings {
-  color: var(--warn);
+  color: #ffa94d;
 }
 
 .good {
@@ -289,15 +316,17 @@ body {
   width: var(--v, 0%);
   background: var(--c, var(--accent));
   box-shadow: 0 0 6px var(--c, var(--accent));
+  transition: width 0.3s ease-out;
 }
 
 .mix-vert {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   flex: 1;
   padding-top: 4px;
+  min-height: 80px;
 }
 
 .mixItem {
@@ -316,7 +345,7 @@ body {
 }
 
 .mixItem i {
-  width: 20px;
+  width: 18px;
   flex: 1;
   background: rgba(255, 255, 255, 0.1);
   position: relative;
@@ -332,6 +361,7 @@ body {
   height: var(--v, 0%);
   background: var(--c, var(--accent));
   box-shadow: 0 0 8px var(--c, var(--accent));
+  transition: height 0.3s ease-out;
 }
 
 .right {
@@ -383,6 +413,82 @@ body {
   );
   border-left-color: var(--accent);
   box-shadow: 0 0 8px rgba(0, 255, 156, 0.2);
+}
+
+.split.type-work {
+  border-left-color: var(--work);
+  background: linear-gradient(
+    90deg,
+    rgba(56, 189, 248, 0.15),
+    rgba(56, 189, 248, 0.02)
+  );
+}
+
+.split.type-work.current {
+  border-left-color: var(--work);
+  background: linear-gradient(
+    90deg,
+    rgba(56, 189, 248, 0.25),
+    rgba(56, 189, 248, 0.04)
+  );
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+}
+
+.split.type-brainstorm {
+  border-left-color: var(--brainstorm);
+  background: linear-gradient(
+    90deg,
+    rgba(251, 191, 36, 0.15),
+    rgba(251, 191, 36, 0.02)
+  );
+}
+
+.split.type-brainstorm.current {
+  border-left-color: var(--brainstorm);
+  background: linear-gradient(
+    90deg,
+    rgba(251, 191, 36, 0.25),
+    rgba(251, 191, 36, 0.04)
+  );
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.3);
+}
+
+.split.type-chill {
+  border-left-color: var(--chill);
+  background: linear-gradient(
+    90deg,
+    rgba(167, 139, 250, 0.15),
+    rgba(167, 139, 250, 0.02)
+  );
+}
+
+.split.type-chill.current {
+  border-left-color: var(--chill);
+  background: linear-gradient(
+    90deg,
+    rgba(167, 139, 250, 0.25),
+    rgba(167, 139, 250, 0.04)
+  );
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.3);
+}
+
+.split.type-debug {
+  border-left-color: var(--debug);
+  background: linear-gradient(
+    90deg,
+    rgba(249, 115, 22, 0.15),
+    rgba(249, 115, 22, 0.02)
+  );
+}
+
+.split.type-debug.current {
+  border-left-color: var(--debug);
+  background: linear-gradient(
+    90deg,
+    rgba(249, 115, 22, 0.25),
+    rgba(249, 115, 22, 0.04)
+  );
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.3);
 }
 
 .split .name {
