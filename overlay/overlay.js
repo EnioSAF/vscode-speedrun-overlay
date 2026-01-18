@@ -15,6 +15,7 @@ const el = {
     files: $("files"),
     activeFile: $("activeFile"),
     filesDelta: $("filesDelta"),
+    diagSummary: $("diagSummary"),
 
     diag: $("diag"),
 
@@ -54,6 +55,30 @@ function clamp(n, min, max) {
     return Math.max(min, Math.min(max, n));
 }
 
+function colorScale(value, min, max, invert) {
+    const t = clamp((value - min) / (max - min), 0, 1);
+    const v = invert ? 1 - t : t;
+    const hue = 120 * v;
+    return `hsl(${hue}, 85%, 55%)`;
+}
+
+function setValueColor(node, value, min, max, invert) {
+    if (!node) return;
+    node.style.color = colorScale(value, min, max, invert);
+}
+
+function shortText(s, max) {
+    const text = String(s || "");
+    if (!text) return "-";
+    return text.length > max ? text.slice(0, Math.max(0, max - 3)) + "..." : text;
+}
+
+function diagColor(count, rgb) {
+    const t = clamp(count / 20, 0, 1);
+    const a = 0.35 + t * 0.65;
+    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+}
+
 function bar(node, vPct, color) {
     if (!node) return;
     node.style.setProperty("--v", clamp(vPct, 0, 100) + "%");
@@ -85,9 +110,34 @@ function levelFromKpm(k) {
 
 function basename(p) {
     const s = String(p || "");
-    if (!s) return "—";
+    if (!s) return "-";
     const parts = s.split(/[/\\]/);
-    return parts[parts.length - 1] || "—";
+    return parts[parts.length - 1] || "-";
+}
+
+function mixColorForFile(p) {
+    const name = String(p || "");
+    const ext = name.split(".").pop()?.toLowerCase();
+    switch (ext) {
+        case "js":
+        case "ts":
+        case "jsx":
+        case "tsx":
+            return "#38bdf8";
+        case "css":
+        case "scss":
+        case "sass":
+            return "#35e08c";
+        case "html":
+        case "htm":
+            return "#fb9238";
+        case "md":
+        case "txt":
+        case "json":
+            return "#fbbf24";
+        default:
+            return "#b26bff";
+    }
 }
 
 function moodFromActivity(mix, kpm, lpm) {
@@ -138,24 +188,44 @@ function renderSplits(list) {
 
         const fc = s.summary?.filesCreated ?? 0;
         const fd = s.summary?.filesDeleted ?? 0;
+        const linesNet = s.summary?.linesNet ?? 0;
+        const prec = s.summary?.precision ?? 0;
 
-        d.innerHTML = `<div class="name">${s.name}</div>
-      <div class="meta">
-        <span>${fmt(s.segMs)}</span>
-        <span>L${s.summary?.linesNet ?? 0}</span>
-        <span>P${s.summary?.precision ?? 0}%</span>
-        <span>F+${fc}/-${fd}</span>
-      </div>`;
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = s.name;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+
+        const t = document.createElement("span");
+        t.textContent = fmt(s.segMs);
+
+        const l = document.createElement("span");
+        l.textContent = `L${linesNet}`;
+        l.style.color = colorScale(Math.abs(linesNet), 0, 50, false);
+
+        const p = document.createElement("span");
+        p.textContent = `P${prec}%`;
+        p.style.color = colorScale(prec, 0, 100, false);
+
+        const f = document.createElement("span");
+        f.textContent = `F+${fc}/-${fd}`;
+        f.style.color = colorScale(fc + fd, 0, 10, false);
+
+        meta.append(t, l, p, f);
+        d.append(name, meta);
         el.splits.appendChild(d);
     });
 }
 
 function computeCodeMix(filesByExt) {
-    const js = (filesByExt.js || 0) + (filesByExt.ts || 0) + (filesByExt.jsx || 0) + (filesByExt.tsx || 0);
+    const js = filesByExt.js || 0;
     const css = filesByExt.css || 0;
     const html = filesByExt.html || 0;
-    const text = filesByExt.text || 0;
-    const other = filesByExt.other || 0;
+    const text = filesByExt.txt || 0;   // <-- ICI
+    const other = filesByExt.oth || 0;   // <-- ICI
+
     const total = Math.max(1, js + css + html + text + other);
 
     return {
@@ -166,6 +236,7 @@ function computeCodeMix(filesByExt) {
         otherPct: Math.round((other / total) * 100),
     };
 }
+
 
 let ws;
 function connect() {
@@ -186,19 +257,43 @@ function connect() {
         el.lpm.textContent = lpm;
         el.prec.textContent = prec + "%";
 
-        setPerf(el.kpm, levelFromKpm(kpm));
-        setPerf(el.prec, levelFromPrecision(prec));
+        setValueColor(el.kpm, kpm, 0, 300, false);
+        setValueColor(el.prec, prec, 0, 100, false);
+        setValueColor(el.lpm, Math.abs(lpm), 0, 50, false);
 
-        el.files.textContent = s.metrics.totals.filesTouchedCount;
-        el.activeFile.textContent = basename(s.metrics.activeFile);
+        const filesTouched = s.metrics.totals.filesTouchedCount;
+        el.files.textContent = filesTouched;
+        setValueColor(el.files, filesTouched, 0, 20, false);
+        const activeFile = s.metrics.activeFile;
+        el.activeFile.textContent = basename(activeFile);
+        el.activeFile.style.color = activeFile ? mixColorForFile(activeFile) : "";
 
         const segCreated = s.metrics.segment?.filesCreated ?? 0;
         const segDeleted = s.metrics.segment?.filesDeleted ?? 0;
         el.filesDelta.innerHTML = `<span class="pos">+${segCreated}</span>/<span class="neg">-${segDeleted}</span>`;
+        const posEl = el.filesDelta.querySelector(".pos");
+        const negEl = el.filesDelta.querySelector(".neg");
+        if (posEl) posEl.classList.toggle("active", segCreated > 0);
+        if (negEl) negEl.classList.toggle("active", segDeleted > 0);
 
         const errors = s.metrics.diagnostics.errors;
         const warnings = s.metrics.diagnostics.warnings;
         el.diag.innerHTML = `<span class="diag-errors">E${errors}</span> <span class="diag-warnings">W${warnings}</span>`;
+        const errEl = el.diag.querySelector(".diag-errors");
+        const warnEl = el.diag.querySelector(".diag-warnings");
+        if (errEl) errEl.style.color = diagColor(errors, [255, 107, 107]);
+        if (warnEl) warnEl.style.color = diagColor(warnings, [255, 169, 77]);
+
+        const worst = s.metrics.diagnostics.worst;
+        if (el.diagSummary) {
+            if (worst && (worst.message || worst.source)) {
+                const sev = String(worst.severity || "info").toUpperCase();
+                const src = worst.source ? `${worst.source}: ` : "";
+                el.diagSummary.textContent = shortText(`${sev} ${src}${worst.message || ""}`.trim(), 44);
+            } else {
+                el.diagSummary.textContent = "-";
+            }
+        }
 
         const build = s.metrics.build;
         el.build.textContent = build.status === "running" ? "RUN" : "IDLE";
@@ -227,9 +322,9 @@ function connect() {
         el.actVal.textContent = String(lpm);
         el.paceVal.textContent = String(kpm);
 
-        setPerf(el.focusVal, focus >= 70 ? "good" : focus >= 40 ? "warn" : focus >= 20 ? "bad" : "morb");
-        setPerf(el.actVal, act >= 70 ? "good" : act >= 40 ? "warn" : act >= 20 ? "bad" : "morb");
-        setPerf(el.paceVal, levelFromKpm(kpm));
+        setValueColor(el.focusVal, focus, 0, 100, false);
+        setValueColor(el.actVal, act, 0, 100, false);
+        setValueColor(el.paceVal, kpm, 0, 300, false);
 
         // CODE MIX
         const mix = computeCodeMix(s.metrics.filesByExt || {});

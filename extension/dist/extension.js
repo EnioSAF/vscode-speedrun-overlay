@@ -39,6 +39,9 @@ const vscode = __importStar(require("vscode"));
 const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const url_1 = require("url");
+/* =====================================================
+Utils HTTP
+===================================================== */
 function requestJson(baseUrl, path, body) {
     return new Promise((resolve, reject) => {
         const url = new url_1.URL(path, baseUrl);
@@ -50,9 +53,9 @@ function requestJson(baseUrl, path, body) {
                 "Content-Type": "application/json",
                 ...(data ? { "Content-Length": String(data.length) } : {})
             }
-        }, (res) => {
+        }, res => {
             res.on("data", () => { });
-            res.on("end", () => resolve());
+            res.on("end", resolve);
         });
         req.on("error", reject);
         if (data)
@@ -64,61 +67,150 @@ function getBaseUrl() {
     const cfg = vscode.workspace.getConfiguration();
     return cfg.get("speedrunOverlay.serverUrl", "http://localhost:17890");
 }
-function computeLineDelta(oldText, newText) {
-    const oldLines = oldText.split(/\r\n|\r|\n/).length;
-    const newLines = newText.split(/\r\n|\r|\n/).length;
-    const diff = newLines - oldLines;
-    return {
-        add: diff > 0 ? diff : 0,
-        rem: diff < 0 ? -diff : 0
-    };
-}
-function countDiagnostics() {
-    const all = vscode.languages.getDiagnostics();
-    let errors = 0;
-    let warnings = 0;
-    for (const [, diags] of all) {
-        for (const d of diags) {
-            if (d.severity === vscode.DiagnosticSeverity.Error)
-                errors++;
-            else if (d.severity === vscode.DiagnosticSeverity.Warning)
-                warnings++;
-        }
+function getCodeType(fileName) {
+    const ext = fileName.split(".").pop()?.toLowerCase();
+    switch (ext) {
+        case "js":
+        case "ts":
+        case "jsx":
+        case "tsx":
+            return "js";
+        case "css":
+        case "scss":
+        case "sass":
+            return "css";
+        case "html":
+        case "htm":
+            return "html";
+        case "md":
+        case "txt":
+        case "json":
+            return "txt";
+        default:
+            return "oth";
     }
-    return { errors, warnings };
 }
+/* =====================================================
+Extension
+===================================================== */
 function activate(context) {
     const baseUrl = () => getBaseUrl();
+    const knownFiles = new Set();
+    const sendFilesDelta = (created, deleted, activeFile) => {
+        requestJson(baseUrl(), "/metrics/files", {
+            created,
+            deleted,
+            activeFile: activeFile ?? null
+        }).catch(() => { });
+    };
+    const sendDiagnostics = () => {
+        const all = vscode.languages.getDiagnostics();
+        let errors = 0;
+        let warnings = 0;
+        let worst = null;
+        const pickWorst = (d) => {
+            const sev = d.severity === vscode.DiagnosticSeverity.Error ? "error" :
+                d.severity === vscode.DiagnosticSeverity.Warning ? "warning" :
+                    d.severity === vscode.DiagnosticSeverity.Information ? "info" : "hint";
+            if (!worst)
+                return { severity: sev, message: d.message, source: d.source };
+            const rank = (s) => s === "error" ? 3 : s === "warning" ? 2 : s === "info" ? 1 : 0;
+            if (rank(sev) > rank(worst.severity)) {
+                return { severity: sev, message: d.message, source: d.source };
+            }
+            return worst;
+        };
+        for (const [, list] of all) {
+            for (const d of list) {
+                if (d.severity === vscode.DiagnosticSeverity.Error)
+                    errors++;
+                if (d.severity === vscode.DiagnosticSeverity.Warning)
+                    warnings++;
+                worst = pickWorst(d);
+            }
+        }
+        requestJson(baseUrl(), "/metrics/diagnostics", {
+            errors,
+            warnings,
+            worst: worst ? {
+                severity: worst.severity,
+                message: worst.message,
+                source: worst.source ?? null
+            } : null
+        }).catch(() => { });
+    };
+    /* ---------------------------------------------
+    Track last known text per file
+    ---------------------------------------------- */
     const lastTextByUri = new Map();
-    let trackedFiles = new Set();
-    // Track file creation/deletion
-    const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*");
-    fileWatcher.onDidCreate(async (uri) => {
-        if (!trackedFiles.has(uri.toString())) {
-            trackedFiles.add(uri.toString());
-            try {
-                await requestJson(baseUrl(), "/metrics/files", { created: 1 });
-            }
-            catch { }
+    // Init already opened documents
+    for (const doc of vscode.workspace.textDocuments) {
+        if (!doc.isUntitled) {
+            lastTextByUri.set(doc.uri.toString(), doc.getText());
+            knownFiles.add(doc.uri.fsPath);
         }
-    });
-    fileWatcher.onDidDelete(async (uri) => {
-        if (trackedFiles.has(uri.toString())) {
-            trackedFiles.delete(uri.toString());
-            try {
-                await requestJson(baseUrl(), "/metrics/files", { deleted: 1 });
-            }
-            catch { }
+    }
+    // Track newly opened documents
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(doc => {
+        if (!doc.isUntitled) {
+            lastTextByUri.set(doc.uri.toString(), doc.getText());
+            knownFiles.add(doc.uri.fsPath);
         }
-    });
-    context.subscriptions.push(fileWatcher);
-    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((doc) => {
+    }));
+    /* ---------------------------------------------
+    Track file create/delete/rename
+    ---------------------------------------------- */
+    context.subscriptions.push(vscode.workspace.onDidCreateFiles(ev => {
+        const file = ev.files[0]?.fsPath;
+        for (const f of ev.files)
+            knownFiles.add(f.fsPath);
+        sendFilesDelta(ev.files.length, 0, file);
+    }));
+    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(ev => {
+        const file = ev.files[0]?.fsPath;
+        for (const f of ev.files)
+            knownFiles.delete(f.fsPath);
+        sendFilesDelta(0, ev.files.length, file);
+    }));
+    context.subscriptions.push(vscode.workspace.onDidRenameFiles(ev => {
+        const file = ev.files[0]?.newUri?.fsPath;
+        for (const f of ev.files) {
+            knownFiles.delete(f.oldUri.fsPath);
+            knownFiles.add(f.newUri.fsPath);
+        }
+        sendFilesDelta(ev.files.length, ev.files.length, file);
+    }));
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
         if (doc.isUntitled)
             return;
-        const uri = doc.uri.toString();
-        lastTextByUri.set(uri, doc.getText());
-        trackedFiles.add(uri);
+        if (!knownFiles.has(doc.uri.fsPath)) {
+            knownFiles.add(doc.uri.fsPath);
+            sendFilesDelta(1, 0, doc.uri.fsPath);
+        }
     }));
+    /* ---------------------------------------------
+    Track diagnostics
+    ---------------------------------------------- */
+    context.subscriptions.push(vscode.languages.onDidChangeDiagnostics(() => {
+        sendDiagnostics();
+    }));
+    sendDiagnostics();
+    /* ---------------------------------------------
+    Track active file (focus)
+    ---------------------------------------------- */
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (!editor)
+            return;
+        const file = editor.document.fileName;
+        const type = getCodeType(file);
+        requestJson(baseUrl(), "/metrics/active-file", {
+            file,
+            type
+        }).catch(() => { });
+    }));
+    /* ---------------------------------------------
+    Track text changes → CODE MIX
+    ---------------------------------------------- */
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async (ev) => {
         const doc = ev.document;
         if (doc.isUntitled)
@@ -126,7 +218,7 @@ function activate(context) {
         if (doc.getText().length > 2_000_000)
             return;
         const uri = doc.uri.toString();
-        const prev = lastTextByUri.get(uri) ?? doc.getText();
+        const prev = lastTextByUri.get(uri) ?? "";
         const next = doc.getText();
         lastTextByUri.set(uri, next);
         let charsAdd = 0;
@@ -135,52 +227,45 @@ function activate(context) {
             charsAdd += c.text.length;
             charsRem += c.rangeLength || 0;
         }
-        const { add: linesAdd, rem: linesRem } = computeLineDelta(prev, next);
+        if (charsAdd === 0 && charsRem === 0)
+            return;
+        const isUndoRedo = ev.reason === vscode.TextDocumentChangeReason.Undo ||
+            ev.reason === vscode.TextDocumentChangeReason.Redo;
+        const undoPenalty = isUndoRedo ? (charsAdd + charsRem) : 0;
+        const type = getCodeType(doc.fileName);
         try {
-            await requestJson(baseUrl(), "/metrics/text", {
-                charsAdd: Math.max(0, charsAdd),
-                charsRem: Math.max(0, charsRem),
-                linesAdd,
-                linesRem,
+            await requestJson(baseUrl(), "/metrics/code-mix", {
+                type,
+                charsAdd,
+                charsRem,
+                undoPenalty,
                 file: doc.fileName
             });
         }
-        catch { }
+        catch {
+            // silent
+        }
     }));
-    let diagTimer = null;
-    const pushDiagnostics = () => {
-        if (diagTimer)
-            clearTimeout(diagTimer);
-        diagTimer = setTimeout(async () => {
-            const counts = countDiagnostics();
-            try {
-                await requestJson(baseUrl(), "/metrics/diagnostics", counts);
-            }
-            catch { }
-        }, 250);
-    };
-    context.subscriptions.push(vscode.languages.onDidChangeDiagnostics(pushDiagnostics));
-    pushDiagnostics();
+    /* ---------------------------------------------
+    Commands (runs / splits / build)
+    ---------------------------------------------- */
     const cmd = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
     cmd("speedrun.runStart", async () => {
         const name = await vscode.window.showInputBox({
             title: "Start Run - Name the first split",
-            placeHolder: "[work] Feature X | [brainstorm] Planning | [chill] Cleanup | [debug] Fix crash",
+            placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
             value: "Split 1"
         });
         if (name === undefined)
             return;
-        // Reset file tracking
-        trackedFiles.clear();
-        await requestJson(baseUrl(), "/run/start", { name: name || "Split 1" });
-        vscode.window.setStatusBarMessage(`Speedrun: RUNNING - ${name || "Split 1"}`, 1200);
+        await requestJson(baseUrl(), "/run/start", { name });
+        vscode.window.setStatusBarMessage(`Speedrun: RUNNING - ${name}`, 1500);
     });
     cmd("speedrun.runPause", async () => {
         await requestJson(baseUrl(), "/run/pause");
         vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
     });
     cmd("speedrun.runReset", async () => {
-        trackedFiles.clear();
         await requestJson(baseUrl(), "/run/reset");
         vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
     });
@@ -191,7 +276,7 @@ function activate(context) {
     cmd("speedrun.split", async () => {
         const name = await vscode.window.showInputBox({
             title: "Next split name",
-            placeHolder: "[work] Auth Fix | [brainstorm] Idea | [chill] Cleanup | [debug] Fix crash"
+            placeHolder: "[work] Auth | [debug] Crash | [refactor] Cleanup"
         });
         if (!name)
             return;

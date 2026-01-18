@@ -30,15 +30,35 @@ function extOf(file) {
 }
 
 function bucketExt(ext) {
-    if (!ext) return "other";
-    if (ext === "js" || ext === "mjs" || ext === "cjs") return "js";
-    if (ext === "ts" || ext === "mts" || ext === "cts") return "ts";
-    if (ext === "jsx") return "jsx";
-    if (ext === "tsx") return "tsx";
-    if (ext === "css" || ext === "scss" || ext === "sass" || ext === "less") return "css";
-    if (ext === "html" || ext === "htm") return "html";
-    if (ext === "md" || ext === "txt") return "text";
-    return "other";
+    switch (ext) {
+        case "js":
+        case "mjs":
+        case "cjs":
+        case "ts":
+        case "mts":
+        case "cts":
+        case "jsx":
+        case "tsx":
+            return "js";
+
+        case "css":
+        case "scss":
+        case "sass":
+        case "less":
+            return "css";
+
+        case "html":
+        case "htm":
+            return "html";
+
+        case "md":
+        case "txt":
+        case "json":
+            return "txt";
+
+        default:
+            return "oth";
+    }
 }
 
 const state = {
@@ -148,13 +168,12 @@ function toPublicState() {
     // Code-mix rolling window basé sur les caractères édités
     const mixRolling = state.metrics.events.reduce(
         (acc, e) => {
-            const b = e.bucket || "other";
-            const w = Math.max(0, (e.charsAdd || 0) + (e.charsRem || 0));
-            if (acc[b] == null) acc.other += w;
-            else acc[b] += w;
+            const b = e.bucket || "oth";
+            const w = (e.charsAdd || 0) + (e.charsRem || 0);
+            acc[b] = (acc[b] || 0) + w;
             return acc;
         },
-        { js: 0, ts: 0, jsx: 0, tsx: 0, css: 0, html: 0, text: 0, other: 0 }
+        { js: 0, css: 0, html: 0, txt: 0, oth: 0 }
     );
 
     const charsPerMin = sum.add;
@@ -394,6 +413,47 @@ app.post("/metrics/diagnostics", (req, res) => {
     state.metrics.diagnostics.errors = errors;
     state.metrics.diagnostics.warnings = warnings;
     state.metrics.diagnostics.worst = worst;
+    broadcast();
+    res.json({ ok: true });
+});
+
+app.post("/metrics/code-mix", (req, res) => {
+    const rawType = String(req.body?.type || "");
+    const charsAdd = Math.max(0, Number(req.body?.charsAdd || 0));
+    const charsRem = Math.max(0, Number(req.body?.charsRem || 0));
+    const undoPenalty = Math.max(0, Number(req.body?.undoPenalty || 0));
+    const file = String(req.body?.file || "");
+
+    const bucket = ["js", "css", "html", "txt", "oth"].includes(rawType)
+        ? rawType
+        : "oth";
+
+    const totalRem = charsRem + undoPenalty;
+    state.metrics.charsAddTotal += charsAdd;
+    state.metrics.charsRemTotal += totalRem;
+
+    if (file) {
+        state.metrics.activeFile = file;
+        state.metrics.filesTouched.add(file);
+
+        if (!state.metrics.filesByBucket.has(bucket)) {
+            state.metrics.filesByBucket.set(bucket, new Set());
+        }
+        state.metrics.filesByBucket.get(bucket).add(file);
+    }
+
+    // Événement temps réel (rolling window)
+    if (state.run.status === "running") {
+        state.metrics.events.push({
+            t: nowMs(),
+            charsAdd,
+            charsRem: totalRem,
+            linesAdd: 0,
+            linesRem: 0,
+            bucket
+        });
+    }
+
     broadcast();
     res.json({ ok: true });
 });
