@@ -96,6 +96,16 @@ Extension
 function activate(context) {
     const baseUrl = () => getBaseUrl();
     const knownFiles = new Set();
+    const buildTracker = { running: 0, failed: false };
+    const isAutoBuildTask = (task) => {
+        if (task.isBackground)
+            return false;
+        if (task.group === vscode.TaskGroup.Build)
+            return true;
+        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup)/i.test(task.name);
+    };
+    const sendBuildStart = () => requestJson(baseUrl(), "/build/start").catch(() => { });
+    const sendBuildStop = (status) => requestJson(baseUrl(), "/build/stop", { status }).catch(() => { });
     const sendFilesDelta = (created, deleted, activeFile) => {
         requestJson(baseUrl(), "/metrics/files", {
             created,
@@ -189,14 +199,37 @@ function activate(context) {
         }
     }));
     /* ---------------------------------------------
-    Track diagnostics
+       Track diagnostics
     ---------------------------------------------- */
     context.subscriptions.push(vscode.languages.onDidChangeDiagnostics(() => {
         sendDiagnostics();
     }));
     sendDiagnostics();
     /* ---------------------------------------------
-    Track active file (focus)
+       Auto build tracking (VS Code tasks)
+    ---------------------------------------------- */
+    context.subscriptions.push(vscode.tasks.onDidStartTaskProcess(ev => {
+        if (!isAutoBuildTask(ev.execution.task))
+            return;
+        if (buildTracker.running === 0) {
+            buildTracker.failed = false;
+            sendBuildStart();
+        }
+        buildTracker.running += 1;
+    }));
+    context.subscriptions.push(vscode.tasks.onDidEndTaskProcess(ev => {
+        if (!isAutoBuildTask(ev.execution.task))
+            return;
+        if (ev.exitCode != null && ev.exitCode !== 0) {
+            buildTracker.failed = true;
+        }
+        buildTracker.running = Math.max(0, buildTracker.running - 1);
+        if (buildTracker.running === 0) {
+            sendBuildStop(buildTracker.failed ? "fail" : "success");
+        }
+    }));
+    /* ---------------------------------------------
+       Track active file (focus)
     ---------------------------------------------- */
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
         if (!editor)
@@ -295,6 +328,25 @@ function activate(context) {
         await requestJson(baseUrl(), "/build/stop", { status: "fail" });
         vscode.window.setStatusBarMessage("Build: FAIL", 1200);
     });
+    /* ---------------------------------------------
+       Status bar controls
+    ---------------------------------------------- */
+    const mkButton = (text, tooltip, command, priority, color) => {
+        const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, priority);
+        item.text = text;
+        item.tooltip = tooltip;
+        item.command = command;
+        if (color)
+            item.color = color;
+        item.show();
+        context.subscriptions.push(item);
+        return item;
+    };
+    mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100, "#35e08c");
+    mkButton("$(debug-pause) SR Pause", "Speedrun: Pause", "speedrun.runPause", 99, "#ffd166");
+    mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 98, "#38bdf8");
+    mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 97, "#ff4d6d");
+    mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 96, "#b26bff");
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map
