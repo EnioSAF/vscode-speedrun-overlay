@@ -63,6 +63,11 @@ function bucketExt(ext) {
     }
 }
 
+function normalizeLabel(raw) {
+    const label = String(raw || "").trim();
+    return label ? label.toUpperCase() : "BUILD";
+}
+
 const state = {
     run: {
         status: "stopped",
@@ -105,10 +110,168 @@ const state = {
             status: "idle",
             startedAt: null,
             lastDurationMs: null,
-            lastStatus: null
+            lastStatus: null,
+            label: "BUILD",
+            lastLabel: "BUILD"
+        },
+        console: {
+            status: "idle",
+            startedAt: null,
+            lastDurationMs: null
         }
     }
 };
+
+const ACTIVE_FILE = path.join(RUNS_DIR, "active.json");
+const ACTIVE_SAVE_DELAY_MS = 1000;
+let activeSaveTimer = null;
+
+function toActiveState() {
+    return {
+        savedAt: nowMs(),
+        run: {
+            status: state.run.status,
+            startedAt: state.run.startedAt,
+            pausedAt: state.run.pausedAt,
+            accumulatedPausedMs: state.run.accumulatedPausedMs,
+            splits: state.run.splits,
+            current: state.run.current,
+            snap: state.run.snap
+        },
+        metrics: {
+            charsAddTotal: state.metrics.charsAddTotal,
+            charsRemTotal: state.metrics.charsRemTotal,
+            linesAddedTotal: state.metrics.linesAddedTotal,
+            linesRemovedTotal: state.metrics.linesRemovedTotal,
+            filesTouched: Array.from(state.metrics.filesTouched),
+            filesByBucket: Array.from(state.metrics.filesByBucket, ([bucket, files]) => [
+                bucket,
+                Array.from(files)
+            ]),
+            activeFile: state.metrics.activeFile,
+            filesCreatedTotal: state.metrics.filesCreatedTotal,
+            filesDeletedTotal: state.metrics.filesDeletedTotal,
+            events: state.metrics.events,
+            diagnostics: state.metrics.diagnostics,
+            build: state.metrics.build,
+            console: state.metrics.console
+        }
+    };
+}
+
+function applyActiveState(saved) {
+    const run = saved?.run || {};
+    const metrics = saved?.metrics || {};
+    if (run.status !== "running" && run.status !== "paused") return;
+
+    state.run.status = run.status;
+    state.run.startedAt = typeof run.startedAt === "number" ? run.startedAt : nowMs();
+    const pausedAt = typeof run.pausedAt === "number" ? run.pausedAt : null;
+    state.run.pausedAt = run.status === "paused" ? (pausedAt ?? nowMs()) : pausedAt;
+    state.run.accumulatedPausedMs =
+        typeof run.accumulatedPausedMs === "number" ? run.accumulatedPausedMs : 0;
+    state.run.splits = Array.isArray(run.splits) ? run.splits : [];
+    state.run.current = run.current || null;
+    if (run.snap && typeof run.snap === "object") {
+        state.run.snap = {
+            atMs: typeof run.snap.atMs === "number" ? run.snap.atMs : 0,
+            charsAdd: typeof run.snap.charsAdd === "number" ? run.snap.charsAdd : 0,
+            charsRem: typeof run.snap.charsRem === "number" ? run.snap.charsRem : 0,
+            linesAdd: typeof run.snap.linesAdd === "number" ? run.snap.linesAdd : 0,
+            linesRem: typeof run.snap.linesRem === "number" ? run.snap.linesRem : 0,
+            filesCount: typeof run.snap.filesCount === "number" ? run.snap.filesCount : 0,
+            filesCreated: typeof run.snap.filesCreated === "number" ? run.snap.filesCreated : 0,
+            filesDeleted: typeof run.snap.filesDeleted === "number" ? run.snap.filesDeleted : 0
+        };
+    }
+
+    state.metrics.charsAddTotal =
+        typeof metrics.charsAddTotal === "number" ? metrics.charsAddTotal : 0;
+    state.metrics.charsRemTotal =
+        typeof metrics.charsRemTotal === "number" ? metrics.charsRemTotal : 0;
+    state.metrics.linesAddedTotal =
+        typeof metrics.linesAddedTotal === "number" ? metrics.linesAddedTotal : 0;
+    state.metrics.linesRemovedTotal =
+        typeof metrics.linesRemovedTotal === "number" ? metrics.linesRemovedTotal : 0;
+    state.metrics.filesTouched = new Set(
+        Array.isArray(metrics.filesTouched) ? metrics.filesTouched : []
+    );
+    state.metrics.filesByBucket = new Map(
+        Array.isArray(metrics.filesByBucket)
+            ? metrics.filesByBucket.map(([bucket, files]) => [
+                bucket,
+                new Set(Array.isArray(files) ? files : [])
+            ])
+            : []
+    );
+    state.metrics.activeFile = typeof metrics.activeFile === "string" ? metrics.activeFile : null;
+    state.metrics.filesCreatedTotal =
+        typeof metrics.filesCreatedTotal === "number" ? metrics.filesCreatedTotal : 0;
+    state.metrics.filesDeletedTotal =
+        typeof metrics.filesDeletedTotal === "number" ? metrics.filesDeletedTotal : 0;
+    state.metrics.events = Array.isArray(metrics.events) ? metrics.events : [];
+    state.metrics.diagnostics = metrics.diagnostics && typeof metrics.diagnostics === "object"
+        ? metrics.diagnostics
+        : { errors: 0, warnings: 0, worst: null };
+    if (metrics.build && typeof metrics.build === "object") {
+        state.metrics.build = {
+            status: typeof metrics.build.status === "string" ? metrics.build.status : "idle",
+            startedAt: typeof metrics.build.startedAt === "number" ? metrics.build.startedAt : null,
+            lastDurationMs: typeof metrics.build.lastDurationMs === "number" ? metrics.build.lastDurationMs : null,
+            lastStatus: typeof metrics.build.lastStatus === "string" ? metrics.build.lastStatus : null,
+            label: typeof metrics.build.label === "string" ? metrics.build.label : "BUILD",
+            lastLabel: typeof metrics.build.lastLabel === "string" ? metrics.build.lastLabel : "BUILD"
+        };
+    }
+    if (metrics.console && typeof metrics.console === "object") {
+        state.metrics.console = {
+            status: metrics.console.status === "running" ? "running" : "idle",
+            startedAt: typeof metrics.console.startedAt === "number" ? metrics.console.startedAt : null,
+            lastDurationMs: typeof metrics.console.lastDurationMs === "number" ? metrics.console.lastDurationMs : null
+        };
+    }
+}
+
+function saveActiveState() {
+    try {
+        fs.mkdirSync(RUNS_DIR, { recursive: true });
+        fs.writeFileSync(ACTIVE_FILE, JSON.stringify(toActiveState(), null, 2));
+    } catch {
+        // ignore
+    }
+}
+
+function clearActiveState() {
+    if (activeSaveTimer) {
+        clearTimeout(activeSaveTimer);
+        activeSaveTimer = null;
+    }
+    try {
+        if (fs.existsSync(ACTIVE_FILE)) fs.unlinkSync(ACTIVE_FILE);
+    } catch {
+        // ignore
+    }
+}
+
+function scheduleActiveSave() {
+    if (state.run.status === "stopped") {
+        clearActiveState();
+        return;
+    }
+    if (activeSaveTimer) return;
+    activeSaveTimer = setTimeout(() => {
+        activeSaveTimer = null;
+        saveActiveState();
+    }, ACTIVE_SAVE_DELAY_MS);
+}
+
+function loadActiveState() {
+    const saved = readJsonFile(ACTIVE_FILE);
+    if (!saved || typeof saved !== "object") return;
+    applyActiveState(saved);
+}
+
+loadActiveState();
 
 function runTimeMs() {
     const r = state.run;
@@ -252,7 +415,8 @@ function toPublicState() {
             },
             filesByExt: mixRolling,
             activeFile: state.metrics.activeFile,
-            build: state.metrics.build
+            build: state.metrics.build,
+            console: state.metrics.console
         }
     };
 }
@@ -262,6 +426,7 @@ function broadcast() {
     for (const client of wss.clients) {
         if (client.readyState === 1) client.send(payload);
     }
+    scheduleActiveSave();
 }
 
 function resetMetrics() {
@@ -276,7 +441,15 @@ function resetMetrics() {
     state.metrics.filesCreatedTotal = 0;
     state.metrics.filesDeletedTotal = 0;
     state.metrics.diagnostics = { errors: 0, warnings: 0, worst: null };
-    state.metrics.build = { status: "idle", startedAt: null, lastDurationMs: null, lastStatus: null };
+    state.metrics.build = {
+        status: "idle",
+        startedAt: null,
+        lastDurationMs: null,
+        lastStatus: null,
+        label: "BUILD",
+        lastLabel: "BUILD"
+    };
+    state.metrics.console = { status: "idle", startedAt: null, lastDurationMs: null };
 }
 
 function resetRun() {
@@ -394,9 +567,7 @@ app.post("/metrics/text", (req, res) => {
         state.metrics.filesByBucket.get(bucket).add(file);
     }
 
-    if (state.run.status === "running") {
-        state.metrics.events.push({ t: nowMs(), charsAdd, charsRem, linesAdd, linesRem, bucket });
-    }
+    state.metrics.events.push({ t: nowMs(), charsAdd, charsRem, linesAdd, linesRem, bucket });
 
     broadcast();
     res.json({ ok: true });
@@ -460,25 +631,28 @@ app.post("/metrics/code-mix", (req, res) => {
     }
 
     // Événement temps réel (rolling window)
-    if (state.run.status === "running") {
-        state.metrics.events.push({
-            t: nowMs(),
-            charsAdd,
-            charsRem: totalRem,
-            linesAdd,
-            linesRem,
-            bucket
-        });
-    }
+    state.metrics.events.push({
+        t: nowMs(),
+        charsAdd,
+        charsRem: totalRem,
+        linesAdd,
+        linesRem,
+        bucket
+    });
 
     broadcast();
     res.json({ ok: true });
 });
 
-app.post("/build/start", (_req, res) => {
-    state.metrics.build.status = "running";
-    state.metrics.build.startedAt = nowMs();
-    state.metrics.build.lastStatus = null;
+app.post("/build/start", (req, res) => {
+    const label = normalizeLabel(req.body?.label);
+    state.metrics.build.label = label;
+    state.metrics.build.lastLabel = label;
+    if (state.metrics.build.status !== "running") {
+        state.metrics.build.status = "running";
+        state.metrics.build.startedAt = nowMs();
+        state.metrics.build.lastStatus = null;
+    }
     broadcast();
     res.json({ ok: true });
 });
@@ -489,10 +663,34 @@ app.post("/build/stop", (req, res) => {
         return res.json({ ok: true });
     }
     const dur = nowMs() - state.metrics.build.startedAt;
+    const label = normalizeLabel(req.body?.label || state.metrics.build.label);
     state.metrics.build.status = "idle";
     state.metrics.build.lastDurationMs = dur;
     state.metrics.build.lastStatus = status === "fail" ? "fail" : "success";
     state.metrics.build.startedAt = null;
+    state.metrics.build.label = label;
+    state.metrics.build.lastLabel = label;
+    broadcast();
+    res.json({ ok: true });
+});
+
+app.post("/console/start", (_req, res) => {
+    if (state.metrics.console.status !== "running") {
+        state.metrics.console.status = "running";
+        state.metrics.console.startedAt = nowMs();
+    }
+    broadcast();
+    res.json({ ok: true });
+});
+
+app.post("/console/stop", (_req, res) => {
+    if (state.metrics.console.status !== "running" || !state.metrics.console.startedAt) {
+        return res.json({ ok: true });
+    }
+    const dur = nowMs() - state.metrics.console.startedAt;
+    state.metrics.console.status = "idle";
+    state.metrics.console.lastDurationMs = dur;
+    state.metrics.console.startedAt = null;
     broadcast();
     res.json({ ok: true });
 });

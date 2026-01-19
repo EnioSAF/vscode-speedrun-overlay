@@ -120,19 +120,40 @@ Extension
 function activate(context) {
     const baseUrl = () => getBaseUrl();
     const knownFiles = new Set();
-    const buildTracker = { running: 0, failed: false };
+    const buildTracker = { running: 0, failed: false, label: "BUILD" };
+    const consoleTracker = { running: 0 };
     const terminalBuildExecutions = new WeakSet();
-    const isAutoBuildTask = (task) => {
+    const terminalConsoleExecutions = new WeakSet();
+    const actionFromText = (text) => {
+        if (/\binstall\b/i.test(text))
+            return "INSTALL";
+        if (/\bcompile\b/i.test(text) || /\btsc\b/i.test(text))
+            return "COMPILE";
+        if (/\b(build|bundle|pack|webpack|vite|rollup)\b/i.test(text))
+            return "BUILD";
+        if (/\b(dev|serve|watch|start)\b/i.test(text))
+            return "DEV";
+        if (/\b(test|vitest|jest|mocha)\b/i.test(text))
+            return "TEST";
+        if (/\b(lint|eslint|stylelint|prettier)\b/i.test(text))
+            return "LINT";
+        return null;
+    };
+    const actionFromTask = (task) => {
         if (task.group === vscode.TaskGroup.Build)
-            return true;
-        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)/i.test(task.name);
+            return "BUILD";
+        return actionFromText(`${task.name} ${task.detail ?? ""}`);
     };
-    const isAutoBuildCommandLine = (commandLine) => {
-        return (/(npm|pnpm|yarn|bun)\s+run\s+(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)\b/i.test(commandLine) ||
-            /\b(tsc|webpack|vite|rollup)\b/i.test(commandLine));
+    const actionFromCommandLine = (commandLine) => {
+        if (/\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|update|upgrade)\b/i.test(commandLine)) {
+            return "INSTALL";
+        }
+        return actionFromText(commandLine);
     };
-    const sendBuildStart = () => requestJson(baseUrl(), "/build/start").catch(() => { });
-    const sendBuildStop = (status) => requestJson(baseUrl(), "/build/stop", { status }).catch(() => { });
+    const sendBuildStart = (label) => requestJson(baseUrl(), "/build/start", { label }).catch(() => { });
+    const sendBuildStop = (status, label) => requestJson(baseUrl(), "/build/stop", { status, label }).catch(() => { });
+    const sendConsoleStart = () => requestJson(baseUrl(), "/console/start").catch(() => { });
+    const sendConsoleStop = () => requestJson(baseUrl(), "/console/stop").catch(() => { });
     const isLocalhost = (host) => host === "localhost" || host === "127.0.0.1";
     const pingServer = (url) => new Promise(resolve => {
         const lib = url.protocol === "https:" ? https : http;
@@ -299,23 +320,26 @@ function activate(context) {
        Auto build tracking (VS Code tasks)
     ---------------------------------------------- */
     context.subscriptions.push(vscode.tasks.onDidStartTaskProcess(ev => {
-        if (!isAutoBuildTask(ev.execution.task))
+        const label = actionFromTask(ev.execution.task);
+        if (!label)
             return;
         if (buildTracker.running === 0) {
             buildTracker.failed = false;
-            sendBuildStart();
+            buildTracker.label = label;
+            sendBuildStart(label);
         }
         buildTracker.running += 1;
     }));
     context.subscriptions.push(vscode.tasks.onDidEndTaskProcess(ev => {
-        if (!isAutoBuildTask(ev.execution.task))
+        const label = actionFromTask(ev.execution.task);
+        if (!label)
             return;
         if (ev.exitCode != null && ev.exitCode !== 0) {
             buildTracker.failed = true;
         }
         buildTracker.running = Math.max(0, buildTracker.running - 1);
         if (buildTracker.running === 0) {
-            sendBuildStop(buildTracker.failed ? "fail" : "success");
+            sendBuildStop(buildTracker.failed ? "fail" : "success", buildTracker.label || label);
         }
     }));
     context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(ev => {
@@ -324,16 +348,30 @@ function activate(context) {
         const cmd = ev.execution.commandLine;
         if (cmd.confidence === vscode.TerminalShellExecutionCommandLineConfidence.Low)
             return;
-        if (!isAutoBuildCommandLine(cmd.value))
+        if (consoleTracker.running === 0) {
+            sendConsoleStart();
+        }
+        consoleTracker.running += 1;
+        terminalConsoleExecutions.add(ev.execution);
+        const label = actionFromCommandLine(cmd.value);
+        if (!label)
             return;
         if (buildTracker.running === 0) {
             buildTracker.failed = false;
-            sendBuildStart();
+            buildTracker.label = label;
+            sendBuildStart(label);
         }
         buildTracker.running += 1;
         terminalBuildExecutions.add(ev.execution);
     }));
     context.subscriptions.push(vscode.window.onDidEndTerminalShellExecution(ev => {
+        if (terminalConsoleExecutions.has(ev.execution)) {
+            terminalConsoleExecutions.delete(ev.execution);
+            consoleTracker.running = Math.max(0, consoleTracker.running - 1);
+            if (consoleTracker.running === 0) {
+                sendConsoleStop();
+            }
+        }
         if (!terminalBuildExecutions.has(ev.execution))
             return;
         terminalBuildExecutions.delete(ev.execution);
@@ -342,7 +380,7 @@ function activate(context) {
         }
         buildTracker.running = Math.max(0, buildTracker.running - 1);
         if (buildTracker.running === 0) {
-            sendBuildStop(buildTracker.failed ? "fail" : "success");
+            sendBuildStop(buildTracker.failed ? "fail" : "success", buildTracker.label);
         }
     }));
     /* ---------------------------------------------
@@ -420,6 +458,11 @@ function activate(context) {
         }
         const state = await requestGetJson(baseUrl(), "/state");
         const status = state?.run?.status || "stopped";
+        if (status === "running") {
+            setRunButtonState(runButton, "running");
+            vscode.window.setStatusBarMessage("Speedrun: ALREADY RUNNING", 1200);
+            return;
+        }
         if (status === "paused") {
             await requestJson(baseUrl(), "/run/start", {});
             setRunButtonState(runButton, "running");
@@ -519,6 +562,7 @@ function activate(context) {
     const runButton = mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
     const splitButton = mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
     const resetButton = mkButton("$(debug-restart)", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+    ensureServerRunning().catch(() => { });
     setRunButtonState(runButton, "stopped");
     const syncRunState = async () => {
         const state = await requestGetJson(baseUrl(), "/state");

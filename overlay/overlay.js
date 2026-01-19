@@ -20,6 +20,7 @@ const el = {
     diag: $("diag"),
 
     build: $("buildValue"),
+    buildLabel: $("buildLabel"),
     buildToast: $("buildToast"),
     mood: $("mood"),
 
@@ -45,6 +46,7 @@ let run = "stopped",
     sync = 0;
 let lastBuildStatus = null;
 let lastBuildState = "idle";
+let lastBuildLabel = null;
 
 function showBuildToast(text, level) {
     if (!el.buildToast) return;
@@ -180,9 +182,13 @@ function mixColorForFile(p) {
     }
 }
 
-function moodFromActivity(mix, kpm, lpm) {
+function moodFromActivity(mix, kpm, lpm, consoleActive) {
     const textPct = mix.textPct || 0;
     const codePct = mix.jsPct + mix.cssPct + mix.htmlPct;
+
+    if (consoleActive && kpm < 50) {
+        return { text: "CONSOLE", color: "#38bdf8" };
+    }
 
     // THINK: écriture de texte/docs/comments
     if (textPct > 40 && kpm < 200) {
@@ -336,23 +342,32 @@ function connect() {
         }
 
         const build = s.metrics.build;
-        el.build.textContent = build.status === "running" ? "RUN" : "IDLE";
+        const buildLabel = String(build.label || build.lastLabel || "BUILD").toUpperCase();
+        if (el.buildLabel) el.buildLabel.textContent = buildLabel;
+        el.build.textContent = build.status === "running"
+            ? "RUN"
+            : build.lastStatus === "fail"
+                ? "FAIL"
+                : build.lastStatus === "success"
+                    ? "OK"
+                    : "IDLE";
         clearPerfClasses(el.build);
         if (build.status === "running") {
             el.build.classList.add("warn");
         } else if (build.lastStatus === "fail") {
             el.build.classList.add("bad");
-        } else {
+        } else if (build.lastStatus === "success") {
             el.build.classList.add("good");
         }
 
         if (build.status === "running" && lastBuildState !== "running") {
-            showBuildToast("BUILD...", "warn");
-        } else if (build.status !== "running" && build.lastStatus && build.lastStatus !== lastBuildStatus) {
-            showBuildToast(build.lastStatus === "fail" ? "BUILD FAIL" : "BUILD OK", build.lastStatus === "fail" ? "bad" : "good");
+            showBuildToast(`${buildLabel}...`, "warn");
+        } else if (build.status !== "running" && build.lastStatus && (build.lastStatus !== lastBuildStatus || buildLabel !== lastBuildLabel)) {
+            showBuildToast(`${buildLabel} ${build.lastStatus === "fail" ? "FAIL" : "OK"}`, build.lastStatus === "fail" ? "bad" : "good");
         }
         lastBuildState = build.status;
         lastBuildStatus = build.lastStatus || null;
+        lastBuildLabel = buildLabel;
 
         const focus = clamp(s.metrics.activity.activeRatio, 0, 100);
         const act = clamp(Math.abs(lpm) * 2, 0, 100);
@@ -384,7 +399,8 @@ function connect() {
         bar(el.other, mix.otherPct, "#b26bff");
 
         // MOOD basé sur le code mix
-        const mood = moodFromActivity(mix, kpm, lpm);
+        const consoleActive = s.metrics.console?.status === "running";
+        const mood = moodFromActivity(mix, kpm, lpm, consoleActive);
         el.mood.textContent = mood.text;
         el.mood.style.color = mood.color;
 
