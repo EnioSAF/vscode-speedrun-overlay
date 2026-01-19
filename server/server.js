@@ -11,10 +11,14 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const RUNS_DIR = path.join(process.cwd(), "runs");
+const RUN_FILE_PREFIX = "run-";
+const RUN_FILE_SUFFIX = ".json";
 
 function nowMs() { return Date.now(); }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function safeDiv(a, b) { return b <= 0 ? 0 : a / b; }
+function runStamp(ms) { return new Date(ms).toISOString().replace(/[:.]/g, "-"); }
 
 function parseSplitName(raw) {
     const m = String(raw || "").trim().match(/^\s*\[(work|chill|brainstorm|debug)\]\s*(.*)$/i);
@@ -298,10 +302,14 @@ function resetRun() {
     };
 }
 
-function finishRunSummary() {
+function finishRunSummary(outcome) {
     const summary = toPublicState();
+    const finishedAt = nowMs();
+    const id = runStamp(finishedAt);
     state.run.lastRunSummary = {
-        finishedAt: nowMs(),
+        id,
+        outcome: outcome || "stop",
+        finishedAt,
         timeMs: summary.run.timeMs,
         splits: summary.run.splits,
         totals: summary.metrics.totals
@@ -311,11 +319,10 @@ function finishRunSummary() {
 
 function saveRunSummary(summary) {
     if (!summary) return;
-    const dir = path.join(process.cwd(), "runs");
-    fs.mkdirSync(dir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(dir, `run-${stamp}.json`);
-    fs.writeFileSync(file, JSON.stringify(summary, null, 2));
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
+    const id = summary.id || runStamp(summary.finishedAt || nowMs());
+    const file = path.join(RUNS_DIR, `${RUN_FILE_PREFIX}${id}${RUN_FILE_SUFFIX}`);
+    fs.writeFileSync(file, JSON.stringify({ ...summary, id }, null, 2));
 }
 
 wss.on("connection", (ws) => {
@@ -323,6 +330,21 @@ wss.on("connection", (ws) => {
 });
 
 app.get("/state", (_req, res) => res.json(toPublicState()));
+app.get("/runs/latest", (_req, res) => {
+    const latest = readLatestSummary();
+    if (!latest) return res.json({ ok: false, latest: null });
+    res.json({ ok: true, latest });
+});
+app.get("/runs", (req, res) => {
+    const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 10)));
+    const runs = readRunSummaries().slice(0, limit);
+    res.json({ ok: true, runs, count: runs.length });
+});
+app.get("/runs/pb", (_req, res) => {
+    const runs = readRunSummaries();
+    const pb = computePb(runs);
+    res.json({ ok: true, pb, count: runs.length });
+});
 
 app.post("/run/start", (req, res) => {
     if (state.run.status === "running") return res.json({ ok: true });
@@ -357,7 +379,10 @@ app.post("/run/pause", (_req, res) => {
 });
 
 app.post("/run/reset", (_req, res) => {
-    if (state.run.status !== "stopped") finishRunSummary();
+    if (state.run.status !== "stopped") {
+        const summary = finishRunSummary("reset");
+        writeLatestSummary(summary);
+    }
     resetMetrics();
     resetRun();
     broadcast();
@@ -366,8 +391,10 @@ app.post("/run/reset", (_req, res) => {
 
 app.post("/run/stop", (_req, res) => {
     if (state.run.status === "stopped") return res.json({ ok: true });
-    const summary = finishRunSummary();
+    const summary = finishRunSummary("stop");
     saveRunSummary(summary);
+    writeLatestSummary(summary);
+    writePbSummary();
     resetRun();
     broadcast();
     res.json({ ok: true });
@@ -558,3 +585,58 @@ app.post("/split", (req, res) => {
 server.listen(PORT, () => {
     console.log(`[server] running on http://localhost:${PORT}`);
 });
+
+function readJsonFile(file) {
+    try {
+        if (!fs.existsSync(file)) return null;
+        const raw = fs.readFileSync(file, "utf8");
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function readRunSummaries() {
+    if (!fs.existsSync(RUNS_DIR)) return [];
+    const files = fs.readdirSync(RUNS_DIR);
+    const runs = [];
+    for (const name of files) {
+        if (!name.startsWith(RUN_FILE_PREFIX) || !name.endsWith(RUN_FILE_SUFFIX)) continue;
+        const data = readJsonFile(path.join(RUNS_DIR, name));
+        if (!data || typeof data !== "object") continue;
+        runs.push(data);
+    }
+    runs.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
+    return runs;
+}
+
+function readLatestSummary() {
+    const file = path.join(RUNS_DIR, "latest.json");
+    return readJsonFile(file) || state.run.lastRunSummary;
+}
+
+function writeLatestSummary(summary) {
+    if (!summary) return;
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
+    const file = path.join(RUNS_DIR, "latest.json");
+    fs.writeFileSync(file, JSON.stringify(summary, null, 2));
+}
+
+function computePb(runs) {
+    const candidates = runs.filter((r) => {
+        if (!r || typeof r.timeMs !== "number" || r.timeMs <= 0) return false;
+        if (r.outcome && r.outcome !== "stop") return false;
+        return true;
+    });
+    if (!candidates.length) return null;
+    return candidates.reduce((best, cur) => (cur.timeMs < best.timeMs ? cur : best));
+}
+
+function writePbSummary() {
+    const runs = readRunSummaries();
+    const pb = computePb(runs);
+    if (!pb) return;
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
+    const file = path.join(RUNS_DIR, "pb.json");
+    fs.writeFileSync(file, JSON.stringify({ pb, updatedAt: nowMs() }, null, 2));
+}
