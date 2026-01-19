@@ -37,6 +37,7 @@ const el = {
     other: $("otherBar"),
 
     splits: $("splits"),
+    currentDate: $("currentDate"),
 };
 
 let run = "stopped",
@@ -56,6 +57,21 @@ function showBuildToast(text, level) {
 
 const pad = (n) => String(n).padStart(2, "0");
 const fmt = (ms) => `${pad((ms / 60000) | 0)}:${pad(((ms % 60000) / 1000) | 0)}.${pad(((ms % 1000) / 10) | 0)}`;
+
+const dateFormatter = new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+});
+
+function updateDate() {
+    if (!el.currentDate) return;
+    el.currentDate.textContent = dateFormatter.format(new Date());
+}
+
+updateDate();
+setInterval(updateDate, 60 * 1000);
 
 function loop() {
     el.time.textContent = fmt(run === "running" ? base + (performance.now() - sync) : base);
