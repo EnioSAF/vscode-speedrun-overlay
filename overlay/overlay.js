@@ -67,6 +67,18 @@ function setValueColor(node, value, min, max, invert) {
     node.style.color = colorScale(value, min, max, invert);
 }
 
+function setKpmPower(node, kpm) {
+    if (!node) return;
+    const n = Math.max(0, Number(kpm) || 0);
+    node.style.setProperty("--kpm", String(n));
+    node.classList.remove("power-0", "power-1", "power-2", "power-3", "power-4");
+    if (n === 0) node.classList.add("power-0");
+    else if (n < 80) node.classList.add("power-1");
+    else if (n < 180) node.classList.add("power-2");
+    else if (n < 280) node.classList.add("power-3");
+    else node.classList.add("power-4");
+}
+
 function shortText(s, max) {
     const text = String(s || "");
     if (!text) return "-";
@@ -257,7 +269,7 @@ function connect() {
         el.lpm.textContent = lpm;
         el.prec.textContent = prec + "%";
 
-        setValueColor(el.kpm, kpm, 0, 300, false);
+        setKpmPower(el.kpm, kpm);
         setValueColor(el.prec, prec, 0, 100, false);
         setValueColor(el.lpm, Math.abs(lpm), 0, 50, false);
 

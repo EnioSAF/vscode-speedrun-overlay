@@ -434,6 +434,8 @@ app.post("/metrics/code-mix", (req, res) => {
     const rawType = String(req.body?.type || "");
     const charsAdd = Math.max(0, Number(req.body?.charsAdd || 0));
     const charsRem = Math.max(0, Number(req.body?.charsRem || 0));
+    const linesAdd = Math.max(0, Number(req.body?.linesAdd || 0));
+    const linesRem = Math.max(0, Number(req.body?.linesRem || 0));
     const undoPenalty = Math.max(0, Number(req.body?.undoPenalty || 0));
     const file = String(req.body?.file || "");
 
@@ -444,6 +446,8 @@ app.post("/metrics/code-mix", (req, res) => {
     const totalRem = charsRem + undoPenalty;
     state.metrics.charsAddTotal += charsAdd;
     state.metrics.charsRemTotal += totalRem;
+    state.metrics.linesAddedTotal += linesAdd;
+    state.metrics.linesRemovedTotal += linesRem;
 
     if (file) {
         state.metrics.activeFile = file;
@@ -461,8 +465,8 @@ app.post("/metrics/code-mix", (req, res) => {
             t: nowMs(),
             charsAdd,
             charsRem: totalRem,
-            linesAdd: 0,
-            linesRem: 0,
+            linesAdd,
+            linesRem,
             bucket
         });
     }

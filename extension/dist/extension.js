@@ -94,6 +94,26 @@ function getCodeType(fileName) {
             return "oth";
     }
 }
+function countNewlines(text) {
+    let count = 0;
+    for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) === 10)
+            count++;
+    }
+    return count;
+}
+function getLineOffsets(text) {
+    const offsets = [0];
+    for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) === 10)
+            offsets.push(i + 1);
+    }
+    return offsets;
+}
+function offsetAt(lineOffsets, pos) {
+    const line = Math.max(0, Math.min(pos.line, lineOffsets.length - 1));
+    return lineOffsets[line] + pos.character;
+}
 /* =====================================================
 Extension
 ===================================================== */
@@ -133,16 +153,16 @@ function activate(context) {
     const ensureServerRunning = async () => {
         const base = new url_1.URL(getBaseUrl());
         if (!isLocalhost(base.hostname))
-            return;
+            return false;
         const port = base.port ? Number(base.port) : (base.protocol === "https:" ? 443 : 80);
         const stateUrl = new url_1.URL("/state", base);
         if (await pingServer(stateUrl))
-            return;
+            return true;
         if (serverProcess && !serverProcess.killed)
-            return;
+            return true;
         const serverPath = path.join(context.extensionPath, "server", "server.js");
         if (!fs.existsSync(serverPath))
-            return;
+            return false;
         serverProcess = (0, child_process_1.spawn)(process.execPath, [serverPath], {
             cwd: path.dirname(serverPath),
             env: { ...process.env, PORT: String(port) },
@@ -151,7 +171,7 @@ function activate(context) {
         serverProcess.on("exit", () => {
             serverProcess = null;
         });
-        await waitForServer(stateUrl);
+        return await waitForServer(stateUrl);
     };
     const setRunButtonState = (btn, status) => {
         const s = status || "stopped";
@@ -321,9 +341,20 @@ function activate(context) {
         lastTextByUri.set(uri, next);
         let charsAdd = 0;
         let charsRem = 0;
+        let linesAdd = 0;
+        let linesRem = 0;
+        const lineOffsets = getLineOffsets(prev);
         for (const c of ev.contentChanges) {
             charsAdd += c.text.length;
             charsRem += c.rangeLength || 0;
+            linesAdd += countNewlines(c.text);
+            const start = offsetAt(lineOffsets, c.range.start);
+            const end = offsetAt(lineOffsets, c.range.end);
+            const safeStart = Math.min(start, prev.length);
+            const safeEnd = Math.min(end, prev.length);
+            if (safeEnd > safeStart) {
+                linesRem += countNewlines(prev.slice(safeStart, safeEnd));
+            }
         }
         if (charsAdd === 0 && charsRem === 0)
             return;
@@ -336,6 +367,8 @@ function activate(context) {
                 type,
                 charsAdd,
                 charsRem,
+                linesAdd,
+                linesRem,
                 undoPenalty,
                 file: doc.fileName
             });
@@ -349,7 +382,18 @@ function activate(context) {
     ---------------------------------------------- */
     const cmd = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
     cmd("speedrun.runStart", async () => {
-        await ensureServerRunning();
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
+        const state = await requestGetJson(baseUrl(), "/state");
+        const status = state?.run?.status || "stopped";
+        if (status === "paused") {
+            await requestJson(baseUrl(), "/run/start", {});
+            setRunButtonState(runButton, "running");
+            vscode.window.setStatusBarMessage("Speedrun: RESUMED", 1200);
+            return;
+        }
         const name = await vscode.window.showInputBox({
             title: "Start Run - Name the first split",
             placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
@@ -362,21 +406,37 @@ function activate(context) {
         vscode.window.setStatusBarMessage(`Speedrun: RUNNING - ${name}`, 1500);
     });
     cmd("speedrun.runPause", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/run/pause");
         setRunButtonState(runButton, "paused");
         vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
     });
     cmd("speedrun.runReset", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/run/reset");
         setRunButtonState(runButton, "stopped");
         vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
     });
     cmd("speedrun.runStop", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/run/stop");
         setRunButtonState(runButton, "stopped");
         vscode.window.setStatusBarMessage("Speedrun: STOPPED", 1200);
     });
     cmd("speedrun.split", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         const name = await vscode.window.showInputBox({
             title: "Next split name",
             placeHolder: "[work] Auth | [debug] Crash | [refactor] Cleanup"
@@ -387,14 +447,26 @@ function activate(context) {
         vscode.window.setStatusBarMessage(`Split: ${name}`, 1200);
     });
     cmd("speedrun.buildStart", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/build/start");
         vscode.window.setStatusBarMessage("Build: START", 1200);
     });
     cmd("speedrun.buildSuccess", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/build/stop", { status: "success" });
         vscode.window.setStatusBarMessage("Build: SUCCESS", 1200);
     });
     cmd("speedrun.buildFail", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
         await requestJson(baseUrl(), "/build/stop", { status: "fail" });
         vscode.window.setStatusBarMessage("Build: FAIL", 1200);
     });
@@ -415,7 +487,7 @@ function activate(context) {
     const runButton = mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
     const splitButton = mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
     const stopButton = mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
-    const resetButton = mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+    const resetButton = mkButton("$(debug-restart)", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
     setRunButtonState(runButton, "stopped");
     const syncRunState = async () => {
         const state = await requestGetJson(baseUrl(), "/state");

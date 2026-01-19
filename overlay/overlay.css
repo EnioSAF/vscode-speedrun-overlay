@@ -140,6 +140,72 @@ body {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+#kpm {
+  position: relative;
+  display: inline-block;
+  transition: color 0.2s ease, text-shadow 0.2s ease, transform 0.2s ease;
+}
+
+#kpm.power-0 {
+  color: rgba(230, 241, 255, 0.35);
+  text-shadow: none;
+  transform: scale(0.98);
+  letter-spacing: 0.02em;
+}
+
+#kpm.power-1 {
+  color: #9fb3c8;
+  text-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
+}
+
+#kpm.power-2 {
+  color: #ffd166;
+  text-shadow: 0 0 8px rgba(255, 209, 102, 0.45),
+    0 0 16px rgba(255, 77, 109, 0.25);
+  transform: scale(1.04);
+}
+
+#kpm.power-3 {
+  color: #ffb703;
+  text-shadow: 0 0 10px rgba(255, 183, 3, 0.6),
+    0 0 18px rgba(255, 77, 109, 0.4);
+  transform: scale(1.08);
+  animation: kpm-pulse 0.8s ease-in-out infinite;
+}
+
+#kpm.power-4 {
+  color: #ff4d6d;
+  text-shadow: 0 0 10px rgba(255, 77, 109, 0.8),
+    0 0 22px rgba(255, 77, 109, 0.55),
+    0 0 36px rgba(255, 209, 102, 0.4);
+  transform: scale(1.12);
+  animation: kpm-pulse 0.6s ease-in-out infinite, kpm-shake 0.15s steps(2) infinite;
+}
+
+@keyframes kpm-pulse {
+  0% {
+    transform: scale(1.06);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes kpm-shake {
+  0% {
+    transform: translateX(0) scale(1.12);
+  }
+  50% {
+    transform: translateX(0.6px) scale(1.12);
+  }
+  100% {
+    transform: translateX(0) scale(1.12);
+  }
+}
 .kv.wide {
   min-width: 120px;
 }
