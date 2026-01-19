@@ -38,9 +38,13 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const http = __importStar(require("http"));
 const https = __importStar(require("https"));
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const child_process_1 = require("child_process");
 const url_1 = require("url");
+let serverProcess = null;
 /* =====================================================
-Utils HTTP
+   Utils HTTP
 ===================================================== */
 function requestJson(baseUrl, path, body) {
     return new Promise((resolve, reject) => {
@@ -98,14 +102,72 @@ function activate(context) {
     const knownFiles = new Set();
     const buildTracker = { running: 0, failed: false };
     const isAutoBuildTask = (task) => {
-        if (task.isBackground)
-            return false;
         if (task.group === vscode.TaskGroup.Build)
             return true;
-        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup)/i.test(task.name);
+        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)/i.test(task.name);
     };
     const sendBuildStart = () => requestJson(baseUrl(), "/build/start").catch(() => { });
     const sendBuildStop = (status) => requestJson(baseUrl(), "/build/stop", { status }).catch(() => { });
+    const isLocalhost = (host) => host === "localhost" || host === "127.0.0.1";
+    const pingServer = (url) => new Promise(resolve => {
+        const lib = url.protocol === "https:" ? https : http;
+        const req = lib.request(url, { method: "GET" }, res => {
+            resolve(!!res.statusCode && res.statusCode >= 200 && res.statusCode < 500);
+        });
+        req.on("error", () => resolve(false));
+        req.setTimeout(700, () => {
+            req.destroy();
+            resolve(false);
+        });
+        req.end();
+    });
+    const waitForServer = async (url, timeoutMs = 2000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (await pingServer(url))
+                return true;
+            await new Promise(r => setTimeout(r, 150));
+        }
+        return false;
+    };
+    const ensureServerRunning = async () => {
+        const base = new url_1.URL(getBaseUrl());
+        if (!isLocalhost(base.hostname))
+            return;
+        const port = base.port ? Number(base.port) : (base.protocol === "https:" ? 443 : 80);
+        const stateUrl = new url_1.URL("/state", base);
+        if (await pingServer(stateUrl))
+            return;
+        if (serverProcess && !serverProcess.killed)
+            return;
+        const serverPath = path.join(context.extensionPath, "server", "server.js");
+        if (!fs.existsSync(serverPath))
+            return;
+        serverProcess = (0, child_process_1.spawn)(process.execPath, [serverPath], {
+            cwd: path.dirname(serverPath),
+            env: { ...process.env, PORT: String(port) },
+            stdio: "ignore"
+        });
+        serverProcess.on("exit", () => {
+            serverProcess = null;
+        });
+        await waitForServer(stateUrl);
+    };
+    const setRunButtonState = (btn, status) => {
+        const s = status || "stopped";
+        if (s === "running") {
+            btn.text = "$(debug-pause) SR Pause";
+            btn.tooltip = "Speedrun: Pause";
+            btn.command = "speedrun.runPause";
+            btn.color = "#ffd166";
+        }
+        else {
+            btn.text = "$(rocket) SR Run";
+            btn.tooltip = "Speedrun: Start/Resume";
+            btn.command = "speedrun.runStart";
+            btn.color = "#35e08c";
+        }
+    };
     const sendFilesDelta = (created, deleted, activeFile) => {
         requestJson(baseUrl(), "/metrics/files", {
             created,
@@ -138,6 +200,9 @@ function activate(context) {
                     warnings++;
                 worst = pickWorst(d);
             }
+        }
+        if (buildTracker.running > 0 && errors > 0) {
+            buildTracker.failed = true;
         }
         requestJson(baseUrl(), "/metrics/diagnostics", {
             errors,
@@ -284,6 +349,7 @@ function activate(context) {
     ---------------------------------------------- */
     const cmd = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
     cmd("speedrun.runStart", async () => {
+        await ensureServerRunning();
         const name = await vscode.window.showInputBox({
             title: "Start Run - Name the first split",
             placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
@@ -292,18 +358,22 @@ function activate(context) {
         if (name === undefined)
             return;
         await requestJson(baseUrl(), "/run/start", { name });
+        setRunButtonState(runButton, "running");
         vscode.window.setStatusBarMessage(`Speedrun: RUNNING - ${name}`, 1500);
     });
     cmd("speedrun.runPause", async () => {
         await requestJson(baseUrl(), "/run/pause");
+        setRunButtonState(runButton, "paused");
         vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
     });
     cmd("speedrun.runReset", async () => {
         await requestJson(baseUrl(), "/run/reset");
+        setRunButtonState(runButton, "stopped");
         vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
     });
     cmd("speedrun.runStop", async () => {
         await requestJson(baseUrl(), "/run/stop");
+        setRunButtonState(runButton, "stopped");
         vscode.window.setStatusBarMessage("Speedrun: STOPPED", 1200);
     });
     cmd("speedrun.split", async () => {
@@ -342,11 +412,49 @@ function activate(context) {
         context.subscriptions.push(item);
         return item;
     };
-    mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
-    mkButton("$(debug-pause) SR Pause", "Speedrun: Pause", "speedrun.runPause", 99999, "#ffd166");
-    mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
-    mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
-    mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+    const runButton = mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
+    const splitButton = mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
+    const stopButton = mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
+    const resetButton = mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+    setRunButtonState(runButton, "stopped");
+    const syncRunState = async () => {
+        const state = await requestGetJson(baseUrl(), "/state");
+        const status = state?.run?.status;
+        if (status)
+            setRunButtonState(runButton, status);
+    };
+    syncRunState().catch(() => { });
+    const syncTimer = setInterval(() => { syncRunState().catch(() => { }); }, 2000);
+    context.subscriptions.push(new vscode.Disposable(() => clearInterval(syncTimer)));
 }
-function deactivate() { }
+function requestGetJson(baseUrl, path) {
+    return new Promise(resolve => {
+        const url = new url_1.URL(path, baseUrl);
+        const lib = url.protocol === "https:" ? https : http;
+        const req = lib.request(url, { method: "GET" }, res => {
+            let data = "";
+            res.on("data", d => { data += d; });
+            res.on("end", () => {
+                try {
+                    resolve(JSON.parse(data));
+                }
+                catch {
+                    resolve(null);
+                }
+            });
+        });
+        req.on("error", () => resolve(null));
+        req.setTimeout(700, () => {
+            req.destroy();
+            resolve(null);
+        });
+        req.end();
+    });
+}
+function deactivate() {
+    if (serverProcess && !serverProcess.killed) {
+        serverProcess.kill();
+        serverProcess = null;
+    }
+}
 //# sourceMappingURL=extension.js.map

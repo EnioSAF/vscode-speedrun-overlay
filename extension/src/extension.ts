@@ -1,13 +1,18 @@
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    import * as vscode from "vscode";
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    import * as http from "http";
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    import * as https from "https";
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    import { URL } from "url";
+import * as vscode from "vscode";
+import * as http from "http";
+import * as https from "https";
+import * as path from "path";
+import * as fs from "fs";
+import { spawn, ChildProcess } from "child_process";
+import { URL } from "url";
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    /* =====================================================
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    Utils HTTP
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    ===================================================== */
+let serverProcess: ChildProcess | null = null;
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    function requestJson(baseUrl: string, path: string, body?: any): Promise<void> {
+/* =====================================================
+   Utils HTTP
+===================================================== */
+
+function requestJson(baseUrl: string, path: string, body?: any): Promise<void> {
                                                                                                                                                                                                                                                                                                                                                                                                                                                         return new Promise((resolve, reject) => {
                                                                                                                                                                                                                                                                                                                                                                                                                                                             const url = new URL(path, baseUrl);
                                                                                                                                                                                                                                                                                                                                                                                                                                                             const data = body ? Buffer.from(JSON.stringify(body)) : null;
@@ -82,13 +87,70 @@ export function activate(context: vscode.ExtensionContext) {
     const knownFiles = new Set<string>();
     const buildTracker = { running: 0, failed: false };
     const isAutoBuildTask = (task: vscode.Task) => {
-        if (task.isBackground) return false;
         if (task.group === vscode.TaskGroup.Build) return true;
-        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup)/i.test(task.name);
+        return /(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)/i.test(task.name);
     };
     const sendBuildStart = () => requestJson(baseUrl(), "/build/start").catch(() => { });
     const sendBuildStop = (status: "success" | "fail") =>
         requestJson(baseUrl(), "/build/stop", { status }).catch(() => { });
+
+    const isLocalhost = (host: string) => host === "localhost" || host === "127.0.0.1";
+    const pingServer = (url: URL): Promise<boolean> => new Promise(resolve => {
+        const lib = url.protocol === "https:" ? https : http;
+        const req = lib.request(url, { method: "GET" }, res => {
+            resolve(!!res.statusCode && res.statusCode >= 200 && res.statusCode < 500);
+        });
+        req.on("error", () => resolve(false));
+        req.setTimeout(700, () => {
+            req.destroy();
+            resolve(false);
+        });
+        req.end();
+    });
+    const waitForServer = async (url: URL, timeoutMs = 2000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (await pingServer(url)) return true;
+            await new Promise(r => setTimeout(r, 150));
+        }
+        return false;
+    };
+    const ensureServerRunning = async () => {
+        const base = new URL(getBaseUrl());
+        if (!isLocalhost(base.hostname)) return;
+        const port = base.port ? Number(base.port) : (base.protocol === "https:" ? 443 : 80);
+        const stateUrl = new URL("/state", base);
+        if (await pingServer(stateUrl)) return;
+        if (serverProcess && !serverProcess.killed) return;
+
+        const serverPath = path.join(context.extensionPath, "server", "server.js");
+        if (!fs.existsSync(serverPath)) return;
+
+        serverProcess = spawn(process.execPath, [serverPath], {
+            cwd: path.dirname(serverPath),
+            env: { ...process.env, PORT: String(port) },
+            stdio: "ignore"
+        });
+        serverProcess.on("exit", () => {
+            serverProcess = null;
+        });
+        await waitForServer(stateUrl);
+    };
+
+    const setRunButtonState = (btn: vscode.StatusBarItem, status: string | undefined) => {
+        const s = status || "stopped";
+        if (s === "running") {
+            btn.text = "$(debug-pause) SR Pause";
+            btn.tooltip = "Speedrun: Pause";
+            btn.command = "speedrun.runPause";
+            btn.color = "#ffd166";
+        } else {
+            btn.text = "$(rocket) SR Run";
+            btn.tooltip = "Speedrun: Start/Resume";
+            btn.command = "speedrun.runStart";
+            btn.color = "#35e08c";
+        }
+    };
                                                                                                                                                                                                                                                                                                                                                                                                                                                         const sendFilesDelta = (created: number, deleted: number, activeFile?: string) => {
                                                                                                                                                                                                                                                                                                                                                                                                                                                             requestJson(baseUrl(), "/metrics/files", {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 created,
@@ -97,11 +159,11 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                             }).catch(() => { });
                                                                                                                                                                                                                                                                                                                                                                                                                                                         };
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        const sendDiagnostics = () => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            const all = vscode.languages.getDiagnostics();
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            let errors = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            let warnings = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            let worst: { severity: string; message: string; source?: string } | null = null;
+    const sendDiagnostics = () => {
+        const all = vscode.languages.getDiagnostics();
+        let errors = 0;
+        let warnings = 0;
+        let worst: { severity: string; message: string; source?: string } | null = null;
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                             const pickWorst = (d: vscode.Diagnostic) => {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 const sev =
@@ -126,12 +188,16 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 }
                                                                                                                                                                                                                                                                                                                                                                                                                                                             }
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            requestJson(baseUrl(), "/metrics/diagnostics", {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                errors,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                warnings,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                worst: worst ? {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    severity: worst.severity,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    message: worst.message,
+        if (buildTracker.running > 0 && errors > 0) {
+            buildTracker.failed = true;
+        }
+
+        requestJson(baseUrl(), "/metrics/diagnostics", {
+            errors,
+            warnings,
+            worst: worst ? {
+                severity: worst.severity,
+                message: worst.message,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                     source: worst.source ?? null
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 } : null
                                                                                                                                                                                                                                                                                                                                                                                                                                                             }).catch(() => { });
@@ -306,35 +372,40 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                         const cmd = (id: string, fn: () => Promise<void> | void) =>
                                                                                                                                                                                                                                                                                                                                                                                                                                                             context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        cmd("speedrun.runStart", async () => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            const name = await vscode.window.showInputBox({
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                title: "Start Run - Name the first split",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                value: "Split 1"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            });
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (name === undefined) return;
+    cmd("speedrun.runStart", async () => {
+        await ensureServerRunning();
+        const name = await vscode.window.showInputBox({
+            title: "Start Run - Name the first split",
+            placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
+            value: "Split 1"
+        });
+        if (name === undefined) return;
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            await requestJson(baseUrl(), "/run/start", { name });
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.window.setStatusBarMessage(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                `Speedrun: RUNNING - ${name}`,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                1500
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            );
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
+        await requestJson(baseUrl(), "/run/start", { name });
+        setRunButtonState(runButton, "running");
+        vscode.window.setStatusBarMessage(
+            `Speedrun: RUNNING - ${name}`,
+            1500
+        );
+    });
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        cmd("speedrun.runPause", async () => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            await requestJson(baseUrl(), "/run/pause");
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
+    cmd("speedrun.runPause", async () => {
+        await requestJson(baseUrl(), "/run/pause");
+        setRunButtonState(runButton, "paused");
+        vscode.window.setStatusBarMessage("Speedrun: PAUSED", 1200);
+    });
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        cmd("speedrun.runReset", async () => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            await requestJson(baseUrl(), "/run/reset");
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
+    cmd("speedrun.runReset", async () => {
+        await requestJson(baseUrl(), "/run/reset");
+        setRunButtonState(runButton, "stopped");
+        vscode.window.setStatusBarMessage("Speedrun: RESET", 1200);
+    });
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        cmd("speedrun.runStop", async () => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            await requestJson(baseUrl(), "/run/stop");
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.window.setStatusBarMessage("Speedrun: STOPPED", 1200);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
+    cmd("speedrun.runStop", async () => {
+        await requestJson(baseUrl(), "/run/stop");
+        setRunButtonState(runButton, "stopped");
+        vscode.window.setStatusBarMessage("Speedrun: STOPPED", 1200);
+    });
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                         cmd("speedrun.split", async () => {
                                                                                                                                                                                                                                                                                                                                                                                                                                                             const name = await vscode.window.showInputBox({
@@ -376,11 +447,49 @@ export function activate(context: vscode.ExtensionContext) {
         return item;
     };
 
-    mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
-    mkButton("$(debug-pause) SR Pause", "Speedrun: Pause", "speedrun.runPause", 99999, "#ffd166");
-    mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
-    mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
-    mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+    const runButton = mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
+    const splitButton = mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
+    const stopButton = mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
+    const resetButton = mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
+
+    setRunButtonState(runButton, "stopped");
+    const syncRunState = async () => {
+        const state = await requestGetJson<{ run?: { status?: string } }>(baseUrl(), "/state");
+        const status = state?.run?.status;
+        if (status) setRunButtonState(runButton, status);
+    };
+    syncRunState().catch(() => { });
+    const syncTimer = setInterval(() => { syncRunState().catch(() => { }); }, 2000);
+    context.subscriptions.push(new vscode.Disposable(() => clearInterval(syncTimer)));
 }
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    export function deactivate() { }
+function requestGetJson<T = any>(baseUrl: string, path: string): Promise<T | null> {
+    return new Promise(resolve => {
+        const url = new URL(path, baseUrl);
+        const lib = url.protocol === "https:" ? https : http;
+        const req = lib.request(url, { method: "GET" }, res => {
+            let data = "";
+            res.on("data", d => { data += d; });
+            res.on("end", () => {
+                try {
+                    resolve(JSON.parse(data));
+                } catch {
+                    resolve(null);
+                }
+            });
+        });
+        req.on("error", () => resolve(null));
+        req.setTimeout(700, () => {
+            req.destroy();
+            resolve(null);
+        });
+        req.end();
+    });
+}
+
+export function deactivate() {
+    if (serverProcess && !serverProcess.killed) {
+        serverProcess.kill();
+        serverProcess = null;
+    }
+}

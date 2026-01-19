@@ -64,6 +64,10 @@
         "compile": "tsc -p .",
         "watch": "tsc -w -p ."
     },
+    "dependencies": {
+        "express": "^4.19.2",
+        "ws": "^8.18.0"
+    },
     "devDependencies": {
         "@types/node": "^20.19.30",
         "@types/vscode": "^1.108.1",
