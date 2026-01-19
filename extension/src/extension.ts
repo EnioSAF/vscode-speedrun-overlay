@@ -107,9 +107,16 @@ export function activate(context: vscode.ExtensionContext) {
     const baseUrl = () => getBaseUrl();
     const knownFiles = new Set<string>();
     const buildTracker = { running: 0, failed: false };
+    const terminalBuildExecutions = new WeakSet<vscode.TerminalShellExecution>();
     const isAutoBuildTask = (task: vscode.Task) => {
         if (task.group === vscode.TaskGroup.Build) return true;
         return /(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)/i.test(task.name);
+    };
+    const isAutoBuildCommandLine = (commandLine: string) => {
+        return (
+            /(npm|pnpm|yarn|bun)\s+run\s+(build|compile|bundle|pack|tsc|webpack|vite|rollup|dev|serve|watch|start)\b/i.test(commandLine) ||
+            /\b(tsc|webpack|vite|rollup)\b/i.test(commandLine)
+        );
     };
     const sendBuildStart = () => requestJson(baseUrl(), "/build/start").catch(() => { });
     const sendBuildStop = (status: "success" | "fail") =>
@@ -324,6 +331,35 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.window.onDidStartTerminalShellExecution(ev => {
+            if (ev.terminal.name.startsWith("Task - ")) return;
+            const cmd = ev.execution.commandLine;
+            if (cmd.confidence === vscode.TerminalShellExecutionCommandLineConfidence.Low) return;
+            if (!isAutoBuildCommandLine(cmd.value)) return;
+            if (buildTracker.running === 0) {
+                buildTracker.failed = false;
+                sendBuildStart();
+            }
+            buildTracker.running += 1;
+            terminalBuildExecutions.add(ev.execution);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.window.onDidEndTerminalShellExecution(ev => {
+            if (!terminalBuildExecutions.has(ev.execution)) return;
+            terminalBuildExecutions.delete(ev.execution);
+            if (ev.exitCode != null && ev.exitCode !== 0) {
+                buildTracker.failed = true;
+            }
+            buildTracker.running = Math.max(0, buildTracker.running - 1);
+            if (buildTracker.running === 0) {
+                sendBuildStop(buildTracker.failed ? "fail" : "success");
+            }
+        })
+    );
+
     /* ---------------------------------------------
        Track active file (focus)
     ---------------------------------------------- */
@@ -525,7 +561,6 @@ export function activate(context: vscode.ExtensionContext) {
 
     const runButton = mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
     const splitButton = mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
-    const stopButton = mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
     const resetButton = mkButton("$(debug-restart)", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
 
     setRunButtonState(runButton, "stopped");

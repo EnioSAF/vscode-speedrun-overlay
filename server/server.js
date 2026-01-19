@@ -548,6 +548,7 @@ app.post("/split", (req, res) => {
         filesDeleted: state.metrics.filesDeletedTotal
     };
 
+    state.metrics.events = [];
     state.run.current = { name: parsed.name || "Split", type: parsed.type || "default" };
 
     broadcast();

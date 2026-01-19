@@ -20,6 +20,7 @@ const el = {
     diag: $("diag"),
 
     build: $("buildValue"),
+    buildToast: $("buildToast"),
     mood: $("mood"),
 
     focus: $("focusBar"),
@@ -41,6 +42,17 @@ const el = {
 let run = "stopped",
     base = 0,
     sync = 0;
+let lastBuildStatus = null;
+let lastBuildState = "idle";
+
+function showBuildToast(text, level) {
+    if (!el.buildToast) return;
+    el.buildToast.textContent = text;
+    el.buildToast.classList.remove("good", "bad", "warn", "show");
+    if (level) el.buildToast.classList.add(level);
+    void el.buildToast.offsetWidth;
+    el.buildToast.classList.add("show");
+}
 
 const pad = (n) => String(n).padStart(2, "0");
 const fmt = (ms) => `${pad((ms / 60000) | 0)}:${pad(((ms % 60000) / 1000) | 0)}.${pad(((ms % 1000) / 10) | 0)}`;
@@ -273,7 +285,7 @@ function connect() {
         setValueColor(el.prec, prec, 0, 100, false);
         setValueColor(el.lpm, Math.abs(lpm), 0, 50, false);
 
-        const filesTouched = s.metrics.totals.filesTouchedCount;
+        const filesTouched = s.metrics.segment?.filesTouched ?? s.metrics.totals.filesTouchedCount;
         el.files.textContent = filesTouched;
         setValueColor(el.files, filesTouched, 0, 20, false);
         const activeFile = s.metrics.activeFile;
@@ -317,6 +329,14 @@ function connect() {
         } else {
             el.build.classList.add("good");
         }
+
+        if (build.status === "running" && lastBuildState !== "running") {
+            showBuildToast("BUILD...", "warn");
+        } else if (build.status !== "running" && build.lastStatus && build.lastStatus !== lastBuildStatus) {
+            showBuildToast(build.lastStatus === "fail" ? "BUILD FAIL" : "BUILD OK", build.lastStatus === "fail" ? "bad" : "good");
+        }
+        lastBuildState = build.status;
+        lastBuildStatus = build.lastStatus || null;
 
         const focus = clamp(s.metrics.activity.activeRatio, 0, 100);
         const act = clamp(Math.abs(lpm) * 2, 0, 100);
