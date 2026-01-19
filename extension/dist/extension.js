@@ -342,11 +342,11 @@ function activate(context) {
         context.subscriptions.push(item);
         return item;
     };
-    mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100, "#35e08c");
-    mkButton("$(debug-pause) SR Pause", "Speedrun: Pause", "speedrun.runPause", 99, "#ffd166");
-    mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 98, "#38bdf8");
-    mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 97, "#ff4d6d");
-    mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 96, "#b26bff");
+    mkButton("$(rocket) SR Run", "Speedrun: Start/Resume", "speedrun.runStart", 100000, "#35e08c");
+    mkButton("$(debug-pause) SR Pause", "Speedrun: Pause", "speedrun.runPause", 99999, "#ffd166");
+    mkButton("$(kebab-horizontal) SR Split", "Speedrun: Add Split", "speedrun.split", 99998, "#38bdf8");
+    mkButton("$(debug-stop) SR Stop", "Speedrun: Stop", "speedrun.runStop", 99997, "#ff4d6d");
+    mkButton("$(debug-restart) SR Reset", "Speedrun: Reset", "speedrun.runReset", 99996, "#b26bff");
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map
