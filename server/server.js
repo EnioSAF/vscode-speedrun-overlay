@@ -363,6 +363,8 @@ function toPublicState() {
     const seg = {
         charsAdd: Math.max(0, state.metrics.charsAddTotal - state.run.snap.charsAdd),
         charsRem: Math.max(0, state.metrics.charsRemTotal - state.run.snap.charsRem),
+        charsNet: Math.max(0, state.metrics.charsAddTotal - state.run.snap.charsAdd) -
+            Math.max(0, state.metrics.charsRemTotal - state.run.snap.charsRem),
         linesAdd: Math.max(0, state.metrics.linesAddedTotal - state.run.snap.linesAdd),
         linesRem: Math.max(0, state.metrics.linesRemovedTotal - state.run.snap.linesRem),
         filesTouched: Math.max(0, state.metrics.filesTouched.size - state.run.snap.filesCount),
@@ -378,6 +380,7 @@ function toPublicState() {
         summary: {
             filesCreated: seg.filesCreated,
             filesDeleted: seg.filesDeleted,
+            charsNet: seg.charsNet,
             linesNet: (seg.linesAdd - seg.linesRem),
             precision: precisionPercent(seg.charsAdd, seg.charsRem),
             keys: Math.round(seg.charsAdd * 0.9)
@@ -397,6 +400,7 @@ function toPublicState() {
             totals: {
                 charsAdd: state.metrics.charsAddTotal,
                 charsRem: state.metrics.charsRemTotal,
+                charsNet: state.metrics.charsAddTotal - state.metrics.charsRemTotal,
                 linesAdd: state.metrics.linesAddedTotal,
                 linesRem: state.metrics.linesRemovedTotal,
                 filesTouchedCount: state.metrics.filesTouched.size,
@@ -742,6 +746,7 @@ app.post("/split", (req, res) => {
     const segFilesDeleted = state.metrics.filesDeletedTotal - state.run.snap.filesDeleted;
 
     const segPrec = precisionPercent(segCharsAdd, segCharsRem);
+    const segCharsNet = segCharsAdd - segCharsRem;
     const segLinesNet = segLinesAdd - segLinesRem;
     const segKeys = Math.round(segCharsAdd * 0.9);
 
@@ -756,6 +761,7 @@ app.post("/split", (req, res) => {
             files: segFiles,
             filesCreated: segFilesCreated,
             filesDeleted: segFilesDeleted,
+            charsNet: segCharsNet,
             linesNet: segLinesNet,
             precision: segPrec,
             keys: segKeys

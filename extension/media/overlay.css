@@ -71,10 +71,10 @@ body {
 
 .header-date {
   color: var(--work);
-  font-size: calc(14px * var(--ui-scale));
+  font-size: calc(9px * var(--ui-scale));
   letter-spacing: 0.08em;
   text-transform: none;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .prompt {

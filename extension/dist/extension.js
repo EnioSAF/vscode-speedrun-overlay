@@ -124,6 +124,8 @@ function activate(context) {
     const consoleTracker = { running: 0 };
     const terminalBuildExecutions = new WeakSet();
     const terminalConsoleExecutions = new WeakSet();
+    let overlayPanel = null;
+    const log = vscode.window.createOutputChannel("Speedrun Overlay");
     const actionFromText = (text) => {
         if (/\binstall\b/i.test(text))
             return "INSTALL";
@@ -176,6 +178,17 @@ function activate(context) {
         }
         return false;
     };
+    const resolveServerPath = () => {
+        const candidates = [path.join(context.extensionPath, "server", "server.js")];
+        const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (wsRoot)
+            candidates.push(path.join(wsRoot, "server", "server.js"));
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate))
+                return candidate;
+        }
+        return null;
+    };
     const ensureServerRunning = async () => {
         const base = new url_1.URL(getBaseUrl());
         if (!isLocalhost(base.hostname))
@@ -186,18 +199,82 @@ function activate(context) {
             return true;
         if (serverProcess && !serverProcess.killed)
             return true;
-        const serverPath = path.join(context.extensionPath, "server", "server.js");
-        if (!fs.existsSync(serverPath))
+        const serverPath = resolveServerPath();
+        if (!serverPath) {
+            log.appendLine("[server] server.js not found in extension or workspace.");
             return false;
+        }
         serverProcess = (0, child_process_1.spawn)(process.execPath, [serverPath], {
             cwd: path.dirname(serverPath),
             env: { ...process.env, PORT: String(port) },
-            stdio: "ignore"
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+        serverProcess.stdout?.on("data", (data) => {
+            log.appendLine(`[server] ${String(data).trimEnd()}`);
+        });
+        serverProcess.stderr?.on("data", (data) => {
+            log.appendLine(`[server:err] ${String(data).trimEnd()}`);
         });
         serverProcess.on("exit", () => {
+            log.appendLine("[server] exited.");
             serverProcess = null;
         });
-        return await waitForServer(stateUrl);
+        const ok = await waitForServer(stateUrl);
+        if (!ok)
+            log.appendLine("[server] did not become ready.");
+        return ok;
+    };
+    const escapeHtmlAttr = (value) => value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const findOverlayDir = () => {
+        const candidates = [
+            path.join(context.extensionPath, "overlay"),
+            path.join(context.extensionPath, "media"),
+            path.join(context.extensionPath, "..", "overlay")
+        ];
+        const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (wsRoot)
+            candidates.push(path.join(wsRoot, "overlay"));
+        for (const dir of candidates) {
+            const html = path.join(dir, "overlay.html");
+            const css = path.join(dir, "overlay.css");
+            const js = path.join(dir, "overlay.js");
+            if (fs.existsSync(html) && fs.existsSync(css) && fs.existsSync(js)) {
+                return dir;
+            }
+        }
+        return null;
+    };
+    const buildOverlayHtml = (webview, overlayDir) => {
+        const htmlPath = path.join(overlayDir, "overlay.html");
+        const cssPath = path.join(overlayDir, "overlay.css");
+        const jsPath = path.join(overlayDir, "overlay.js");
+        const cssUri = webview.asWebviewUri(vscode.Uri.file(cssPath));
+        const jsUri = webview.asWebviewUri(vscode.Uri.file(jsPath));
+        let serverOrigin = "";
+        try {
+            serverOrigin = new url_1.URL(baseUrl()).origin;
+        }
+        catch {
+            serverOrigin = "";
+        }
+        const csp = [
+            "default-src 'none'",
+            `style-src ${webview.cspSource}`,
+            `script-src ${webview.cspSource}`,
+            `connect-src ${serverOrigin} ws: wss: http: https:`,
+            `img-src ${webview.cspSource} data:`,
+            `font-src ${webview.cspSource}`
+        ].join("; ");
+        let html = fs.readFileSync(htmlPath, "utf8");
+        html = html.replace('<link rel="stylesheet" href="./overlay.css" />', `<link rel="stylesheet" href="${cssUri}" />`);
+        html = html.replace('<script src="./overlay.js"></script>', `<script src="${jsUri}"></script>`);
+        html = html.replace("<body>", `<body data-server="${escapeHtmlAttr(baseUrl())}" data-scale="0.7">`);
+        html = html.replace("</head>", `    <meta http-equiv="Content-Security-Policy" content="${csp}" />\n</head>`);
+        return html;
     };
     const setRunButtonState = (btn, status) => {
         const s = status || "stopped";
@@ -471,7 +548,7 @@ function activate(context) {
         }
         const name = await vscode.window.showInputBox({
             title: "Start Run - Name the first split",
-            placeHolder: "[work] Feature X | [debug] Fix bug | [chill] Cleanup",
+            placeHolder: "[work] Feature | [brainstorm] Idea | [chill] Cleanup | [debug] Fix",
             value: "Split 1"
         });
         if (name === undefined)
@@ -514,7 +591,7 @@ function activate(context) {
         }
         const name = await vscode.window.showInputBox({
             title: "Next split name",
-            placeHolder: "[work] Auth | [debug] Crash | [refactor] Cleanup"
+            placeHolder: "[work] Auth | [brainstorm] Plan | [chill] Cleanup | [debug] Crash"
         });
         if (!name)
             return;
@@ -544,6 +621,28 @@ function activate(context) {
         }
         await requestJson(baseUrl(), "/build/stop", { status: "fail" });
         vscode.window.setStatusBarMessage("Build: FAIL", 1200);
+    });
+    cmd("speedrun.showOverlayPanel", async () => {
+        if (!(await ensureServerRunning())) {
+            vscode.window.showErrorMessage("Speedrun server not available. Check serverUrl or reinstall extension.");
+            return;
+        }
+        const overlayDir = findOverlayDir();
+        if (!overlayDir) {
+            vscode.window.showErrorMessage("Speedrun overlay assets not found.");
+            return;
+        }
+        if (!overlayPanel) {
+            overlayPanel = vscode.window.createWebviewPanel("speedrunOverlay", "Speedrun Counter", vscode.ViewColumn.Beside, {
+                enableScripts: true,
+                localResourceRoots: [vscode.Uri.file(overlayDir)]
+            });
+            overlayPanel.onDidDispose(() => {
+                overlayPanel = null;
+            });
+        }
+        overlayPanel.webview.html = buildOverlayHtml(overlayPanel.webview, overlayDir);
+        overlayPanel.reveal(vscode.ViewColumn.Beside);
     });
     /* ---------------------------------------------
        Status bar controls

@@ -11,6 +11,7 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const RUNS_DIR = path.join(process.cwd(), "runs");
 
 function nowMs() { return Date.now(); }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
@@ -66,6 +67,16 @@ function bucketExt(ext) {
 function normalizeLabel(raw) {
     const label = String(raw || "").trim();
     return label ? label.toUpperCase() : "BUILD";
+}
+
+function readJsonFile(file) {
+    try {
+        if (!fs.existsSync(file)) return null;
+        const raw = fs.readFileSync(file, "utf8");
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
 }
 
 const state = {
@@ -359,6 +370,8 @@ function toPublicState() {
     const seg = {
         charsAdd: Math.max(0, state.metrics.charsAddTotal - state.run.snap.charsAdd),
         charsRem: Math.max(0, state.metrics.charsRemTotal - state.run.snap.charsRem),
+        charsNet: Math.max(0, state.metrics.charsAddTotal - state.run.snap.charsAdd) -
+            Math.max(0, state.metrics.charsRemTotal - state.run.snap.charsRem),
         linesAdd: Math.max(0, state.metrics.linesAddedTotal - state.run.snap.linesAdd),
         linesRem: Math.max(0, state.metrics.linesRemovedTotal - state.run.snap.linesRem),
         filesTouched: Math.max(0, state.metrics.filesTouched.size - state.run.snap.filesCount),
@@ -374,6 +387,7 @@ function toPublicState() {
         summary: {
             filesCreated: seg.filesCreated,
             filesDeleted: seg.filesDeleted,
+            charsNet: seg.charsNet,
             linesNet: (seg.linesAdd - seg.linesRem),
             precision: precisionPercent(seg.charsAdd, seg.charsRem),
             keys: Math.round(seg.charsAdd * 0.9)
@@ -393,6 +407,7 @@ function toPublicState() {
             totals: {
                 charsAdd: state.metrics.charsAddTotal,
                 charsRem: state.metrics.charsRemTotal,
+                charsNet: state.metrics.charsAddTotal - state.metrics.charsRemTotal,
                 linesAdd: state.metrics.linesAddedTotal,
                 linesRem: state.metrics.linesRemovedTotal,
                 filesTouchedCount: state.metrics.filesTouched.size,
@@ -484,10 +499,9 @@ function finishRunSummary() {
 
 function saveRunSummary(summary) {
     if (!summary) return;
-    const dir = path.join(process.cwd(), "runs");
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(dir, `run-${stamp}.json`);
+    const file = path.join(RUNS_DIR, `run-${stamp}.json`);
     fs.writeFileSync(file, JSON.stringify(summary, null, 2));
 }
 
@@ -715,6 +729,7 @@ app.post("/split", (req, res) => {
     const segFilesDeleted = state.metrics.filesDeletedTotal - state.run.snap.filesDeleted;
 
     const segPrec = precisionPercent(segCharsAdd, segCharsRem);
+    const segCharsNet = segCharsAdd - segCharsRem;
     const segLinesNet = segLinesAdd - segLinesRem;
     const segKeys = Math.round(segCharsAdd * 0.9);
 
@@ -729,6 +744,7 @@ app.post("/split", (req, res) => {
             files: segFiles,
             filesCreated: segFilesCreated,
             filesDeleted: segFilesDeleted,
+            charsNet: segCharsNet,
             linesNet: segLinesNet,
             precision: segPrec,
             keys: segKeys

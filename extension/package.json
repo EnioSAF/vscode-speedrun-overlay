@@ -47,6 +47,10 @@
             {
                 "command": "speedrun.buildFail",
                 "title": "Speedrun: Build Stop (Fail)"
+            },
+            {
+                "command": "speedrun.showOverlayPanel",
+                "title": "Speedrun: Open Counter Panel"
             }
         ],
         "configuration": {
