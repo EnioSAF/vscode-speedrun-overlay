@@ -74,7 +74,39 @@ function showBuildToast(text, level) {
 }
 
 const pad = (n) => String(n).padStart(2, "0");
-const fmt = (ms) => `${pad((ms / 60000) | 0)}:${pad(((ms % 60000) / 1000) | 0)}.${pad(((ms % 1000) / 10) | 0)}`;
+const fmt = (ms) => {
+    if (ms >= 3600000) {
+        const h = (ms / 3600000) | 0;
+        const m = ((ms % 3600000) / 60000) | 0;
+        const s = ((ms % 60000) / 1000) | 0;
+        return `${h}:${pad(m)}:${pad(s)}`;
+    }
+    return `${pad((ms / 60000) | 0)}:${pad(((ms % 60000) / 1000) | 0)}.${pad(((ms % 1000) / 10) | 0)}`;
+};
+const fmtDelta = (ms) => {
+    const sign = ms >= 0 ? "+" : "-";
+    const abs = Math.abs(ms);
+    if (abs >= 3600000) {
+        const h = (abs / 3600000) | 0;
+        const m = ((abs % 3600000) / 60000) | 0;
+        const s = ((abs % 60000) / 1000) | 0;
+        return `${sign}${h}:${pad(m)}:${pad(s)}`;
+    }
+    if (abs >= 60000) {
+        const m = (abs / 60000) | 0;
+        const s = ((abs % 60000) / 1000) | 0;
+        return `${sign}${pad(m)}:${pad(s)}`;
+    }
+    const sec = abs / 1000;
+    const str = sec < 10 ? sec.toFixed(1) : sec.toFixed(0);
+    return `${sign}${str}s`;
+};
+const deltaShift = (ms) => {
+    const maxShift = 20;
+    const span = 30000;
+    const ratio = Math.max(-1, Math.min(1, ms / span));
+    return Math.round(ratio * maxShift);
+};
 const trimTrailingZero = (s) => s.replace(/\.0$/, "");
 const shortCount = (n) => {
     const sign = n < 0 ? "-" : "";
@@ -278,6 +310,21 @@ function setSplitType(type) {
 function renderSplits(list) {
     el.splits.innerHTML = "";
     list.forEach((s, i) => {
+        const prevSegMs = i > 0 ? (list[i - 1]?.segMs ?? null) : null;
+        if (prevSegMs != null) {
+            const diff = s.segMs - prevSegMs;
+            const gap = document.createElement("div");
+            gap.className = "split-gap";
+
+            const toast = document.createElement("span");
+            toast.className = `delta-toast ${diff <= 0 ? "good" : "bad"}`;
+            toast.textContent = fmtDelta(diff);
+            toast.style.setProperty("--delta-shift", `${deltaShift(diff)}px`);
+
+            gap.appendChild(toast);
+            el.splits.appendChild(gap);
+        }
+
         const d = document.createElement("div");
         const isCurrent = i === list.length - 1;
         const type = s.type || "default";
@@ -318,6 +365,41 @@ function renderSplits(list) {
         meta.append(t, l, c, p, f);
         d.append(name, meta);
         el.splits.appendChild(d);
+    });
+    scheduleSplitsScroll();
+}
+
+let splitsScroll = { distance: 0, duration: 0 };
+let splitsScrollPending = false;
+
+function updateSplitsScroll() {
+    if (!el.splits) return;
+    const track = el.splits;
+    const viewport = track.parentElement;
+    if (!viewport) return;
+    const distance = Math.max(0, track.scrollHeight - viewport.clientHeight);
+    if (distance <= 2) {
+        if (splitsScroll.distance !== 0) {
+            track.style.animation = "none";
+            track.style.transform = "translateY(0px)";
+            track.style.removeProperty("--scroll-distance");
+            splitsScroll = { distance: 0, duration: 0 };
+        }
+        return;
+    }
+    const duration = Math.max(8000, Math.round(distance * 45));
+    if (distance === splitsScroll.distance && duration === splitsScroll.duration) return;
+    track.style.setProperty("--scroll-distance", `${distance}px`);
+    track.style.animation = `splits-scroll ${duration}ms linear infinite`;
+    splitsScroll = { distance, duration };
+}
+
+function scheduleSplitsScroll() {
+    if (splitsScrollPending) return;
+    splitsScrollPending = true;
+    requestAnimationFrame(() => {
+        splitsScrollPending = false;
+        updateSplitsScroll();
     });
 }
 

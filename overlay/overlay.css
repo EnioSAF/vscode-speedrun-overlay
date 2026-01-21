@@ -635,6 +635,25 @@ body {
 .splits-track {
   position: absolute;
   width: 100%;
+  will-change: transform;
+}
+
+@keyframes splits-scroll {
+  0% {
+    transform: translateY(0);
+  }
+  12% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(calc(-1 * var(--scroll-distance, 0px)));
+  }
+  62% {
+    transform: translateY(calc(-1 * var(--scroll-distance, 0px)));
+  }
+  100% {
+    transform: translateY(0);
+  }
 }
 
 .split {
@@ -643,7 +662,60 @@ body {
   padding: 4px 6px;
   font-size: calc(11px * var(--ui-scale));
   border-left: 2px solid transparent;
-  margin: 2px 0;
+  margin: 1px 0;
+}
+
+.split-gap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 10px;
+  margin: 1px 0;
+  position: relative;
+}
+
+.delta-toast {
+  font-size: calc(8px * var(--ui-scale));
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(12, 18, 26, 0.9);
+  color: var(--muted);
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  transform: translateX(var(--delta-shift, 0px));
+  transition: transform 0.35s ease;
+  position: relative;
+}
+
+.delta-toast::before {
+  font-size: calc(7px * var(--ui-scale));
+  line-height: 1;
+}
+
+.delta-toast.good {
+  color: var(--good);
+  border-color: rgba(53, 224, 140, 0.45);
+  box-shadow: 0 0 8px rgba(53, 224, 140, 0.2);
+}
+
+.delta-toast.bad {
+  color: var(--bad);
+  border-color: rgba(255, 77, 109, 0.45);
+  box-shadow: 0 0 8px rgba(255, 77, 109, 0.2);
+}
+
+.delta-toast.good::before {
+  content: "▲";
+}
+
+.delta-toast.bad::before {
+  content: "▼";
 }
 
 .split.current {
