@@ -114,6 +114,23 @@ function offsetAt(lineOffsets, pos) {
     const line = Math.max(0, Math.min(pos.line, lineOffsets.length - 1));
     return lineOffsets[line] + pos.character;
 }
+const TRACKABLE_SCHEMES = new Set([
+    "file",
+    "untitled",
+    "vscode-userdata",
+    "vscode-settings",
+    "vscode-remote",
+    "vscode-notebook-cell"
+]);
+const MAX_DOC_CHARS = 2_000_000;
+const ASSIST_SUSPECT_CHARS = 20;
+const ASSIST_SUSPECT_LINES = 2;
+function isTrackableDocument(doc) {
+    return TRACKABLE_SCHEMES.has(doc.uri.scheme);
+}
+function isFileDocument(doc) {
+    return doc.uri.scheme === "file";
+}
 /* =====================================================
 Extension
 ===================================================== */
@@ -343,15 +360,25 @@ function activate(context) {
     const lastTextByUri = new Map();
     // Init already opened documents
     for (const doc of vscode.workspace.textDocuments) {
-        if (!doc.isUntitled) {
-            lastTextByUri.set(doc.uri.toString(), doc.getText());
+        if (!isTrackableDocument(doc))
+            continue;
+        const text = doc.getText();
+        if (text.length <= MAX_DOC_CHARS) {
+            lastTextByUri.set(doc.uri.toString(), text);
+        }
+        if (isFileDocument(doc)) {
             knownFiles.add(doc.uri.fsPath);
         }
     }
     // Track newly opened documents
     context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(doc => {
-        if (!doc.isUntitled) {
-            lastTextByUri.set(doc.uri.toString(), doc.getText());
+        if (!isTrackableDocument(doc))
+            return;
+        const text = doc.getText();
+        if (text.length <= MAX_DOC_CHARS) {
+            lastTextByUri.set(doc.uri.toString(), text);
+        }
+        if (isFileDocument(doc)) {
             knownFiles.add(doc.uri.fsPath);
         }
     }));
@@ -379,7 +406,7 @@ function activate(context) {
         sendFilesDelta(ev.files.length, ev.files.length, file);
     }));
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
-        if (doc.isUntitled)
+        if (!isFileDocument(doc))
             return;
         if (!knownFiles.has(doc.uri.fsPath)) {
             knownFiles.add(doc.uri.fsPath);
@@ -478,23 +505,31 @@ function activate(context) {
     ---------------------------------------------- */
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async (ev) => {
         const doc = ev.document;
-        if (doc.isUntitled)
+        if (!isTrackableDocument(doc))
             return;
-        if (doc.getText().length > 2_000_000)
+        const next = doc.getText();
+        if (next.length > MAX_DOC_CHARS)
             return;
         const uri = doc.uri.toString();
         const prev = lastTextByUri.get(uri) ?? "";
-        const next = doc.getText();
         lastTextByUri.set(uri, next);
         let charsAdd = 0;
         let charsRem = 0;
         let linesAdd = 0;
         let linesRem = 0;
+        let maxChangeAdd = 0;
+        let maxChangeLinesAdd = 0;
         const lineOffsets = getLineOffsets(prev);
         for (const c of ev.contentChanges) {
-            charsAdd += c.text.length;
+            const addLen = c.text.length;
+            const addLines = countNewlines(c.text);
+            charsAdd += addLen;
             charsRem += c.rangeLength || 0;
-            linesAdd += countNewlines(c.text);
+            linesAdd += addLines;
+            if (addLen > maxChangeAdd)
+                maxChangeAdd = addLen;
+            if (addLines > maxChangeLinesAdd)
+                maxChangeLinesAdd = addLines;
             const start = offsetAt(lineOffsets, c.range.start);
             const end = offsetAt(lineOffsets, c.range.end);
             const safeStart = Math.min(start, prev.length);
@@ -507,6 +542,15 @@ function activate(context) {
             return;
         const isUndoRedo = ev.reason === vscode.TextDocumentChangeReason.Undo ||
             ev.reason === vscode.TextDocumentChangeReason.Redo;
+        const isLargeInsert = maxChangeAdd >= ASSIST_SUSPECT_CHARS ||
+            maxChangeLinesAdd >= ASSIST_SUSPECT_LINES;
+        const isAssist = !isUndoRedo && charsAdd > 0 && isLargeInsert;
+        if (isAssist) {
+            charsAdd = Math.min(1, charsAdd);
+            charsRem = 0;
+            linesAdd = 0;
+            linesRem = 0;
+        }
         const undoPenalty = isUndoRedo ? (charsAdd + charsRem) : 0;
         const type = getCodeType(doc.fileName);
         try {

@@ -99,6 +99,27 @@ function offsetAt(lineOffsets: number[], pos: vscode.Position): number {
     return lineOffsets[line] + pos.character;
 }
 
+const TRACKABLE_SCHEMES = new Set([
+    "file",
+    "untitled",
+    "vscode-userdata",
+    "vscode-settings",
+    "vscode-remote",
+    "vscode-notebook-cell"
+]);
+const MAX_DOC_CHARS = 2_000_000;
+
+const ASSIST_SUSPECT_CHARS = 20;
+const ASSIST_SUSPECT_LINES = 2;
+
+function isTrackableDocument(doc: vscode.TextDocument): boolean {
+    return TRACKABLE_SCHEMES.has(doc.uri.scheme);
+}
+
+function isFileDocument(doc: vscode.TextDocument): boolean {
+    return doc.uri.scheme === "file";
+}
+
                                                                                                                                                                                                                                                                                                                                                                                                                                                     /* =====================================================
                                                                                                                                                                                                                                                                                                                                                                                                                                                     Extension
                                                                                                                                                                                                                                                                                                                                                                                                                                                     ===================================================== */
@@ -341,23 +362,31 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                         ---------------------------------------------- */
                                                                                                                                                                                                                                                                                                                                                                                                                                                         const lastTextByUri = new Map<string, string>();
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        // Init already opened documents
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        for (const doc of vscode.workspace.textDocuments) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (!doc.isUntitled) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                lastTextByUri.set(doc.uri.toString(), doc.getText());
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                knownFiles.add(doc.uri.fsPath);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        }
+    // Init already opened documents
+    for (const doc of vscode.workspace.textDocuments) {
+        if (!isTrackableDocument(doc)) continue;
+        const text = doc.getText();
+        if (text.length <= MAX_DOC_CHARS) {
+            lastTextByUri.set(doc.uri.toString(), text);
+        }
+        if (isFileDocument(doc)) {
+            knownFiles.add(doc.uri.fsPath);
+        }
+    }
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        // Track newly opened documents
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        context.subscriptions.push(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.workspace.onDidOpenTextDocument(doc => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (!doc.isUntitled) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    lastTextByUri.set(doc.uri.toString(), doc.getText());
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    knownFiles.add(doc.uri.fsPath);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            })
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
+    // Track newly opened documents
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(doc => {
+            if (!isTrackableDocument(doc)) return;
+            const text = doc.getText();
+            if (text.length <= MAX_DOC_CHARS) {
+                lastTextByUri.set(doc.uri.toString(), text);
+            }
+            if (isFileDocument(doc)) {
+                knownFiles.add(doc.uri.fsPath);
+            }
+        })
+    );
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                         /* ---------------------------------------------
                                                                                                                                                                                                                                                                                                                                                                                                                                                         Track file create/delete/rename
@@ -389,15 +418,15 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                             })
                                                                                                                                                                                                                                                                                                                                                                                                                                                         );
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        context.subscriptions.push(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.workspace.onDidSaveTextDocument(doc => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (doc.isUntitled) return;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (!knownFiles.has(doc.uri.fsPath)) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    knownFiles.add(doc.uri.fsPath);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                    sendFilesDelta(1, 0, doc.uri.fsPath);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            })
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(doc => {
+            if (!isFileDocument(doc)) return;
+            if (!knownFiles.has(doc.uri.fsPath)) {
+                knownFiles.add(doc.uri.fsPath);
+                sendFilesDelta(1, 0, doc.uri.fsPath);
+            }
+        })
+    );
 
     /* ---------------------------------------------
        Track diagnostics
@@ -503,27 +532,36 @@ export function activate(context: vscode.ExtensionContext) {
                                                                                                                                                                                                                                                                                                                                                                                                                                                         /* ---------------------------------------------
                                                                                                                                                                                                                                                                                                                                                                                                                                                         Track text changes → CODE MIX
                                                                                                                                                                                                                                                                                                                                                                                                                                                         ---------------------------------------------- */
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        context.subscriptions.push(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            vscode.workspace.onDidChangeTextDocument(async ev => {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                const doc = ev.document;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (doc.isUntitled) return;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (doc.getText().length > 2_000_000) return;
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(async ev => {
+            const doc = ev.document;
+            if (!isTrackableDocument(doc)) return;
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                const uri = doc.uri.toString();
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                const prev = lastTextByUri.get(uri) ?? "";
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                const next = doc.getText();
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                lastTextByUri.set(uri, next);
+            const next = doc.getText();
+            if (next.length > MAX_DOC_CHARS) return;
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                let charsAdd = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                let charsRem = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                let linesAdd = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                let linesRem = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                const lineOffsets = getLineOffsets(prev);
+            const uri = doc.uri.toString();
+            const prev = lastTextByUri.get(uri) ?? "";
+            lastTextByUri.set(uri, next);
+
+            let charsAdd = 0;
+            let charsRem = 0;
+            let linesAdd = 0;
+            let linesRem = 0;
+            let maxChangeAdd = 0;
+            let maxChangeLinesAdd = 0;
+            const lineOffsets = getLineOffsets(prev);
 
             for (const c of ev.contentChanges) {
-                charsAdd += c.text.length;
+                const addLen = c.text.length;
+                const addLines = countNewlines(c.text);
+
+                charsAdd += addLen;
                 charsRem += c.rangeLength || 0;
-                linesAdd += countNewlines(c.text);
+                linesAdd += addLines;
+
+                if (addLen > maxChangeAdd) maxChangeAdd = addLen;
+                if (addLines > maxChangeLinesAdd) maxChangeLinesAdd = addLines;
 
                 const start = offsetAt(lineOffsets, c.range.start);
                 const end = offsetAt(lineOffsets, c.range.end);
@@ -539,6 +577,19 @@ export function activate(context: vscode.ExtensionContext) {
             const isUndoRedo =
                 ev.reason === vscode.TextDocumentChangeReason.Undo ||
                 ev.reason === vscode.TextDocumentChangeReason.Redo;
+
+            const isLargeInsert =
+                maxChangeAdd >= ASSIST_SUSPECT_CHARS ||
+                maxChangeLinesAdd >= ASSIST_SUSPECT_LINES;
+            const isAssist = !isUndoRedo && charsAdd > 0 && isLargeInsert;
+
+            if (isAssist) {
+                charsAdd = Math.min(1, charsAdd);
+                charsRem = 0;
+                linesAdd = 0;
+                linesRem = 0;
+            }
+
             const undoPenalty = isUndoRedo ? (charsAdd + charsRem) : 0;
 
             const type = getCodeType(doc.fileName);
@@ -555,9 +606,9 @@ export function activate(context: vscode.ExtensionContext) {
                 });
             } catch {
                 // silent
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            })
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        );
+            }
+        })
+    );
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                         /* ---------------------------------------------
                                                                                                                                                                                                                                                                                                                                                                                                                                                         Commands (runs / splits / build)
